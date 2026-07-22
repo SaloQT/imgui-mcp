@@ -83,7 +83,8 @@ copy_common_files() {
         "${SCRIPT_DIR}/assets" "${SCRIPT_DIR}/tests" "${destination}/"
     cp "${SCRIPT_DIR}/CMakeLists.txt" "${SCRIPT_DIR}/server.py" \
         "${SCRIPT_DIR}/demo.py" "${SCRIPT_DIR}/README.md" \
-        "${SCRIPT_DIR}/LICENSE" "${SCRIPT_DIR}/VERSION" "${destination}/"
+        "${SCRIPT_DIR}/LICENSE" "${SCRIPT_DIR}/VERSION" \
+        "${SCRIPT_DIR}/pyproject.toml" "${SCRIPT_DIR}/uv.lock" "${destination}/"
     cp "${SCRIPT_DIR}/.mcp.json" "${destination}/"
     mkdir -p "${destination}/.omp"
     cp "${SCRIPT_DIR}/.omp/mcp.json" "${destination}/.omp/"
