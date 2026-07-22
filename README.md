@@ -58,16 +58,17 @@ The agent creates widgets, takes a screenshot, **sees the rendered result**, and
 | 🖼️ **Visual Feedback** | Screenshot capture (full frame, widget-bound metadata, annotated overlays) — the agent sees its work |
 | 🎮 **Game UI Patterns** | Health bars, mana bars, inventory grids, dialogue boxes, minimaps, cooldown radials, skill bars, quest trackers, character sheets, notification toasts, tooltip cards |
 | 🖱️ **Input Simulation** | Click buttons, type text, hover widgets, scroll, press keys — test UI behavior programmatically |
-| ✨ **Animation** | 7 easing functions (linear, ease-in/out, bounce, elastic, back), property tweens, loop/ping-pong |
+| ✨ **Animation** | 7 easing functions, nested-widget property tweens, loop/ping-pong, and JSON round-trip persistence |
 | 🎨 **Theming** | 7 presets (dark, light, classic, fantasy, sci-fi, retro, minimal) + per-color and per-variable customization |
 | 📐 **Layout** | 9-point anchor system, resolution presets (720p → 4K + ultrawide + mobile), DPI scaling, safe areas |
 | 🔄 **Workflow** | Undo/redo (50-deep), named snapshots, save/load/delete layout versions |
 | 🎬 **Scenes** | Multi-window composition, z-order layers, conditional visibility (`widget.checked==true`) |
-| 📦 **Export** | Generate production C++, Lua, or JSON from any layout — import JSON back |
+| 📦 **Export** | Generate production C++, Lua, or complete JSON designs with fonts and live animations |
 | 🖌️ **Drawing** | Lines, rects, circles, triangles, beziers, polylines, text — direct ImDrawList access |
 | 🧩 **102 Widgets** | Every Dear ImGui widget + 11 game-specific patterns |
 | 🔌 **Zero Dependencies** | Python server needs no pip packages. C++ app vendors ImGui. |
 | 🪟 **Native Polish** | Dark themed Windows title bar, branded taskbar/title-bar icon, and HiDPI-aware windowing |
+| 🔤 **Font Stacks** | Runtime TTF/OTF loading, Unicode coverage presets, and merged icon/symbol fallback faces |
 
 ---
 
@@ -198,7 +199,7 @@ uv run python demo.py   # runs a full feature demonstration
 |------|-------------|
 | `imgui_load_texture` | Load a BMP/PPM image as a GPU texture for Image/ImageButton widgets. Creates a checkerboard placeholder if file not found. |
 | `imgui_unload_texture` | Free a loaded texture's GPU resources |
-| `imgui_load_font` | Load a TTF/OTF font from a native-app-visible path under a stable ID and pixel size. |
+| `imgui_load_font` | Load a TTF/OTF font with a glyph-coverage preset, or merge it into another face as a symbol/icon fallback. |
 | `imgui_set_font` | Switch the global ImGui font by ID, or restore the embedded `default`. |
 | `imgui_list_fonts` | List loaded font IDs, paths, sizes, and the active font. |
 
@@ -208,10 +209,18 @@ path:
 
 ```text
 imgui_load_font(id="ui", path="C:\\Windows\\Fonts\\segoeui.ttf", size_pixels=18)
+imgui_load_font(id="symbols", path="C:\\Windows\\Fonts\\seguisym.ttf",
+                size_pixels=18, glyph_ranges="symbols", merge_into="ui")
 imgui_set_font(id="ui")
 imgui_list_fonts()
 imgui_set_font(id="default")
 ```
+
+`glyph_ranges` accepts `default`, `unicode`, `symbols`, `cyrillic`, `greek`,
+`vietnamese`, `thai`, `japanese`, `korean`, `chinese_full`, or
+`chinese_simplified`. Dear ImGui 1.92 resolves Unicode dynamically; merging is
+the important step when the primary face does not contain icon or symbol
+glyphs. On Windows, Segoe UI Symbol is merged into Segoe UI automatically.
 
 Fonts remain loaded for the renderer process lifetime. IDs are unique; choose a
 new ID when comparing another face or size.
@@ -245,8 +254,8 @@ new ID when comparing another face or size.
 |------|-------------|
 | `imgui_export_cpp` | Generate standalone C++ ImGui code that recreates the current layout (with static variables for state) |
 | `imgui_export_lua` | Generate Lua imgui binding code that recreates the layout |
-| `imgui_export_json` | Serialize the layout as portable JSON (windows, widgets, values, positions) |
-| `imgui_import_json` | Import a JSON layout — recreates all windows and widgets |
+| `imgui_export_json` | Serialize the complete live design: windows, widgets, font stack, active font, and tweens |
+| `imgui_import_json` | Restore the complete design, including merged fonts and in-progress/looping animations |
 
 ### Debug Windows (4)
 

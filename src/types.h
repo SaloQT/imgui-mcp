@@ -327,6 +327,8 @@ struct LoadedFont {
     std::string id;
     std::string path;
     float size_pixels = 0.0f;
+    std::string glyph_ranges = "unicode";
+    std::string merge_into;
     ImFont* font = nullptr;
 };
 
@@ -343,6 +345,7 @@ extern SDL_Window* g_sdl_window;
 
 void emit_json(json response);
 void emit_event(const std::string& window_id, const std::string& widget_id, const std::string& event_type, const json& data = json{});
+Widget* find_widget_in_window(WindowState& win, const std::string& id);
 void render_widget(const std::string& win_id, Widget& w);
 bool is_safe_widget_format(const Widget& widget);
 std::string imgui_window_name(const WindowState& window);

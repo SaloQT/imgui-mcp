@@ -565,7 +565,17 @@ int main(int argc, char** argv) {
             io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f)) {
         io.FontDefault = windows_font;
         g_fonts.emplace("windows-ui", LoadedFont{
-            "windows-ui", "C:\\Windows\\Fonts\\segoeui.ttf", 16.0f, windows_font});
+            "windows-ui", "C:\\Windows\\Fonts\\segoeui.ttf", 16.0f,
+            "unicode", "", windows_font});
+        ImFontConfig symbol_config;
+        symbol_config.MergeMode = true;
+        symbol_config.DstFont = windows_font;
+        if (io.Fonts->AddFontFromFileTTF(
+                "C:\\Windows\\Fonts\\seguisym.ttf", 16.0f, &symbol_config)) {
+            g_fonts.emplace("windows-symbols", LoadedFont{
+                "windows-symbols", "C:\\Windows\\Fonts\\seguisym.ttf", 16.0f,
+                "symbols", "windows-ui", windows_font});
+        }
     }
 #endif
 
@@ -661,9 +671,9 @@ int main(int argc, char** argv) {
                     std::lock_guard<std::mutex> wlock(g_mutex);
                     auto wit = g_windows.find(it->window_id);
                     if (wit != g_windows.end()) {
-                        auto git = wit->second.widgets.find(it->widget_id);
-                        if (git != wit->second.widgets.end()) {
-                            auto& w = git->second;
+                        if (Widget* widget = find_widget_in_window(
+                                wit->second, it->widget_id)) {
+                            auto& w = *widget;
                             if (it->property == "value") w.float_val[0] = value;
                             else if (it->property == "opacity") w.color[3] = value;
                         else if (it->property == "pos_x") w.cursor_offset[0] = value;

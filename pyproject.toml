@@ -1,6 +1,6 @@
 [project]
 name = "imgui-mcp"
-version = "1.0.5"
+version = "1.0.6"
 description = "MCP server for building and iterating on Dear ImGui interfaces"
 requires-python = ">=3.10"
 dependencies = [

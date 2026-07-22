@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsdl2-dev libgl1-mesa-dev cmake g++ xvfb
           python3 -m venv .venv
-          .venv/bin/pip install .
+          .venv/bin/pip install "mcp>=1.27,<2"
 
       - name: Verify tag matches source version
         run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < VERSION)"
@@ -54,7 +54,7 @@ jobs:
           cp -r SDL2-2.30.0/x86_64-w64-mingw32/* cross/
 
           python3 -m venv .venv
-          .venv/bin/pip install .
+          .venv/bin/pip install "mcp>=1.27,<2"
 
       - name: Verify tag matches source version
         run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < VERSION)"
@@ -109,7 +109,8 @@ jobs:
 
             ### What's included
             - 74 MCP tools, 102 widget types
-            - Runtime TTF/OTF font loading and switching
+            - Runtime TTF/OTF font stacks with merged icon/symbol fallbacks
+            - Portable JSON designs preserve active fonts and live animations
             - Visual feedback (screenshots)
             - Input simulation, animation, theming
             - Game UI patterns (health bars, inventory, dialogue, minimaps)

@@ -1414,12 +1414,12 @@ TOOLS = [
                 "widget": {"type": "string", "description": "Widget ID to animate"},
                 "property": {
                     "type": "string",
-                    "enum": ["value", "opacity", "pos_x", "size_x", "size_y", "int_value"],
+                    "enum": ["value", "opacity", "pos_x", "pos_y", "size_x", "size_y", "int_value"],
                     "description": "Widget property to animate",
                 },
                 "from": {"type": "number", "description": "Start value", "default": 0},
                 "to": {"type": "number", "description": "End value", "default": 1},
-                "duration": {"type": "number", "description": "Duration in seconds", "default": 1.0},
+                "duration": {"type": "number", "exclusiveMinimum": 0, "description": "Duration in seconds", "default": 1.0},
                 "ease": {
                     "type": "string",
                     "enum": ["linear", "ease_in", "ease_out", "ease_in_out", "bounce", "elastic", "back"],
@@ -1940,6 +1940,15 @@ TOOLS = [
                 "size_pixels": {
                     "type": "number", "minimum": 8, "maximum": 96,
                     "description": "Font size in pixels (default 16)",
+                },
+                "glyph_ranges": {
+                    "type": "string",
+                    "enum": ["default", "unicode", "symbols", "cyrillic", "greek", "vietnamese", "thai", "japanese", "korean", "chinese_full", "chinese_simplified"],
+                    "description": "Glyph coverage preset (default: unicode)",
+                },
+                "merge_into": {
+                    "type": "string",
+                    "description": "Optional loaded font ID to merge this face into (for icon/symbol fallback fonts)",
                 },
             },
             "required": ["id", "path"],
@@ -2645,7 +2654,10 @@ class MCPServer:
                 "id": args.get("id", ""),
                 "path": args.get("path", ""),
                 "size_pixels": args.get("size_pixels", 16),
+                "glyph_ranges": args.get("glyph_ranges", "unicode"),
             }
+            if "merge_into" in args:
+                cmd["merge_into"] = args["merge_into"]
             return self.app.send_command(cmd) or {"error": "no response"}
 
         elif name == "imgui_set_font":

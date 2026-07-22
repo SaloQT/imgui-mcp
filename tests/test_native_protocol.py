@@ -133,6 +133,14 @@ class NativeProtocolTests(unittest.TestCase):
         self.assertEqual("default", fonts["fonts"][0]["id"])
         self.assertTrue(fonts["fonts"][0]["active"])
 
+        self.app.send({
+            "cmd": "load_font", "id": "default", "path": "/missing.ttf",
+            "size_pixels": 16,
+        })
+        reserved = self.app.read_json()
+        self.assertEqual("error", reserved.get("type"), reserved)
+        self.assertIn("reserved", reserved.get("message", ""))
+
         self.app.send({"cmd": "set_font", "id": "default"})
         response = self.app.read_json()
         self.assertEqual("ack", response.get("type"), response)
@@ -149,6 +157,104 @@ class NativeProtocolTests(unittest.TestCase):
         response = self.app.read_json()
         self.assertEqual("error", response.get("type"), response)
         self.assertIn("does not exist", response.get("message", ""))
+
+    @unittest.skipUnless(
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf").is_file(),
+        "DejaVu Sans is required for native font integration coverage",
+    )
+    def test_fonts_and_animations_survive_json_round_trip(self) -> None:
+        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        self.app.send({
+            "cmd": "load_font", "id": "body", "path": font_path,
+            "size_pixels": 17, "glyph_ranges": "unicode",
+        })
+        self.assertEqual("ack", self.app.read_json().get("type"))
+        self.app.send({
+            "cmd": "load_font", "id": "symbols", "path": font_path,
+            "size_pixels": 17, "glyph_ranges": "symbols", "merge_into": "body",
+        })
+        merged = self.app.read_json()
+        self.assertEqual("ack", merged.get("type"), merged)
+        self.assertEqual("body", merged.get("merge_into"), merged)
+        self.app.send({"cmd": "set_font", "id": "symbols"})
+        merged_selection = self.app.read_json()
+        self.assertEqual("error", merged_selection.get("type"), merged_selection)
+        self.assertIn("not independently selectable", merged_selection.get("message", ""))
+        self.app.send({"cmd": "set_font", "id": "body"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+        self.app.send({"cmd": "import_json", "json": {"windows": []}})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+        self.app.send({"cmd": "list_fonts"})
+        listed = self.app.read_json()["fonts"]
+        self.assertTrue(next(font for font in listed if font["id"] == "body")["active"])
+        self.assertFalse(next(font for font in listed if font["id"] == "symbols")["active"])
+
+        self.app.send({"cmd": "import_json", "json": {
+            "windows": [],
+            "fonts": [{
+                "id": "partial", "path": font_path, "size_pixels": 16,
+                "glyph_ranges": "unicode", "merge_into": "",
+            }],
+            "animations": [{
+                "window": "missing", "widget": "missing", "property": "value",
+                "duration": 1.0,
+            }],
+        }})
+        rejected_import = self.app.read_json()
+        self.assertEqual("error", rejected_import.get("type"), rejected_import)
+        self.app.send({"cmd": "list_fonts"})
+        self.assertNotIn("partial", {font["id"] for font in self.app.read_json()["fonts"]})
+
+        self.app.send({"cmd": "create_window", "id": "animated", "title": "Animated"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+        self.app.send({
+            "cmd": "add_widget", "window": "animated", "id": "controls",
+            "widget_type": "group", "children": [{
+                "id": "pulse", "widget_type": "progress_bar", "value": 0.0,
+            }],
+        })
+        self.assertEqual("ack", self.app.read_json().get("type"))
+        self.app.send({
+            "cmd": "animate", "window": "animated", "widget": "missing",
+            "property": "value", "duration": 1.0,
+        })
+        invalid_animation = self.app.read_json()
+        self.assertEqual("error", invalid_animation.get("type"), invalid_animation)
+        self.assertIn("target", invalid_animation.get("message", ""))
+        self.app.send({
+            "cmd": "animate", "window": "animated", "widget": "pulse",
+            "property": "value", "from": 0.0, "to": 1.0,
+            "duration": 20.0, "ease": "ease_in_out", "loop": True,
+        })
+        self.assertEqual("ack", self.app.read_json().get("type"))
+        self.app.send({
+            "cmd": "animate", "window": "animated", "widget": "pulse",
+            "property": "value", "from": 0.25, "to": 0.75,
+            "duration": 20.0, "ease": "ease_in_out", "loop": True,
+        })
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        self.app.send({"cmd": "export_json"})
+        exported = self.app.read_json()
+        layout = exported["json"]
+        self.assertEqual("body", layout["active_font"])
+        self.assertEqual("unicode", layout["fonts"][0]["glyph_ranges"])
+        self.assertEqual("body", layout["fonts"][1]["merge_into"])
+        self.assertEqual("value", layout["animations"][0]["property"])
+        self.assertEqual(0.25, layout["animations"][0]["from"])
+        self.assertEqual("ease_in_out", layout["animations"][0]["ease"])
+
+        self.app.send({"cmd": "stop_all_animations"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+        self.app.send({"cmd": "import_json", "json": layout})
+        imported = self.app.read_json()
+        self.assertEqual("ack", imported.get("type"), imported)
+        self.assertEqual(2, imported.get("fonts"), imported)
+        self.assertEqual(1, imported.get("animations"), imported)
+        self.app.send({"cmd": "export_json"})
+        round_tripped = self.app.read_json()["json"]
+        self.assertEqual("body", round_tripped["active_font"])
+        self.assertEqual(1, len(round_tripped["animations"]))
 
     def test_drains_queued_commands_before_stdin_eof(self) -> None:
         self.app.send({"cmd": "create_window", "id": "batch", "title": "Batch"})
