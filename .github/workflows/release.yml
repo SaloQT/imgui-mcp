@@ -18,6 +18,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsdl2-dev libgl1-mesa-dev cmake g++ xvfb
+          python3 -m venv .venv
+          .venv/bin/pip install .
 
       - name: Verify tag matches source version
         run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < VERSION)"
@@ -25,6 +27,7 @@ jobs:
       - name: Build, test, and package
         run: |
           VERSION=${GITHUB_REF_NAME#v}
+          export PATH="$PWD/.venv/bin:$PATH"
           ./release.sh "${VERSION}" --linux-only
 
       - name: Upload artifact
@@ -50,12 +53,16 @@ jobs:
           mkdir -p cross
           cp -r SDL2-2.30.0/x86_64-w64-mingw32/* cross/
 
+          python3 -m venv .venv
+          .venv/bin/pip install .
+
       - name: Verify tag matches source version
         run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < VERSION)"
 
       - name: Build, test, and package
         run: |
           VERSION=${GITHUB_REF_NAME#v}
+          export PATH="$PWD/.venv/bin:$PATH"
           ./release.sh "${VERSION}" --windows-only
 
       - name: Upload artifact
