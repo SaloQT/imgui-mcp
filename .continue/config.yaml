@@ -4,7 +4,9 @@ schema: v1
 
 mcpServers:
   - name: imgui
-    command: python3
+    command: uv
     args:
+      - run
+      - python
       - server.py
     env: {}

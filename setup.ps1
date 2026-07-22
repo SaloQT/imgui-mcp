@@ -26,28 +26,20 @@ $Binary = Join-Path $BuildDir "Release\imgui_mcp_app.exe"
 $PackagedBinary = Join-Path $ScriptDir "bin\imgui_mcp_app.exe"
 if (Test-Path $PackagedBinary) { $Binary = $PackagedBinary }
 
-$PythonCommand = $null
-foreach ($candidate in @("python", "python3", "py")) {
-    if (Get-Command $candidate -ErrorAction SilentlyContinue) {
-        $PythonCommand = $candidate
-        break
-    }
+$PythonCommand = "uv"
+if (-not (Get-Command $PythonCommand -ErrorAction SilentlyContinue)) {
+    Write-Host "[X] uv is required for the official MCP Python SDK: https://docs.astral.sh/uv/" -ForegroundColor Red
+    exit 1
 }
-if (-not $PythonCommand) {
-    Write-Host "[X] Python 3 was not found in PATH." -ForegroundColor Red
+$sync = Start-Process -FilePath $PythonCommand -ArgumentList @("sync", "--project", $ScriptDir, "--frozen") -Wait -PassThru -NoNewWindow
+if ($sync.ExitCode -ne 0) {
+    Write-Host "[X] Failed to install the official MCP Python SDK environment." -ForegroundColor Red
     exit 1
 }
 $ServerPyJson = $ServerPy -replace '\\','/'
-$PythonArgsJson = if ($PythonCommand -eq "py") {
-    '"-3", "' + $ServerPyJson + '"'
-} else {
-    '"' + $ServerPyJson + '"'
-}
-$PythonYamlArgs = if ($PythonCommand -eq "py") {
-    "      - `"-3`"`n      - `"$ServerPyJson`""
-} else {
-    "      - `"$ServerPyJson`""
-}
+$ScriptDirJson = $ScriptDir -replace '\\','/'
+$PythonArgsJson = '"run", "--project", "' + $ScriptDirJson + '", "python", "' + $ServerPyJson + '"'
+$PythonYamlArgs = "      - run`n      - --project`n      - `"$ScriptDirJson`"`n      - python`n      - `"$ServerPyJson`""
 
 function Write-OK($msg)   { Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "[!] $msg" -ForegroundColor Yellow }
@@ -329,6 +321,6 @@ Write-Host "    .roo\mcp.json          -> Roo Code"
 Write-Host "    .zed\settings.json     -> Zed"
 Write-Host "    .codex\config.toml     -> Codex CLI"
 Write-Host ""
-Write-Host "  To test: python server.py"
-Write-Host "  To demo: python demo.py"
+Write-Host "  To test: uv run python server.py"
+Write-Host "  To demo: uv run python demo.py"
 Write-Host "==========================================================="

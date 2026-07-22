@@ -133,7 +133,8 @@ verify_manifest() {
 }
 
 COMMON_MANIFEST=(
-    VERSION server.py demo.py README.md LICENSE CMakeLists.txt .mcp.json .omp/mcp.json
+    VERSION server.py demo.py README.md LICENSE CMakeLists.txt pyproject.toml uv.lock
+    .mcp.json .omp/mcp.json
     assets/windows/app-icon.png assets/windows/app.ico assets/windows/app.rc
     assets/windows/resource.h tests/test_server.py tests/test_native_protocol.py
 )
