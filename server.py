@@ -2,21 +2,22 @@
 """
 ImGui MCP Server - Model Context Protocol server for controlling Dear ImGui v1.92.8
 
-Implements MCP 2025-06-18 over stdio transport (JSON-RPC 2.0, newline-delimited).
-Spawns the compiled imgui_mcp_app and bridges MCP tool calls to the C++ application.
+Uses the official MCP Python SDK over stdio and bridges tool calls to the
+compiled imgui_mcp_app process.
 
 Usage with omp (~/.omp/agent/mcp.json or project .omp/mcp.json):
 {
   "mcpServers": {
     "imgui": {
-      "command": "python3",
-      "args": ["/path/to/server.py"],
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/imgui-mcp", "python", "/path/to/imgui-mcp/server.py"],
       "env": {}
     }
   }
 }
 """
 
+import asyncio
 import json
 import os
 import subprocess
@@ -27,6 +28,11 @@ import time
 import queue
 from pathlib import Path
 from typing import Any, Optional
+
+import mcp.server.stdio
+import mcp.types as mcp_types
+from mcp.server.lowlevel import NotificationOptions, Server
+from mcp.server.models import InitializationOptions
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -119,62 +125,27 @@ def _reject_non_finite_json_constant(value: str) -> None:
 
 
 def _loads_strict_json(payload: str) -> Any:
-    return json.loads(payload, parse_constant=_reject_non_finite_json_constant)
-
-
-def _iter_mcp_input(stream: Any):
-    """Yield bounded UTF-8 MCP lines and bounded protocol errors.
-
-    Real stdin exposes a binary buffer, which lets us enforce a byte limit
-    before decoding. StringIO and other text-only streams use the compatible
-    fallback exercised by the unit tests.
-    """
-    binary_stream = getattr(stream, "buffer", None)
-    if binary_stream is not None:
-        while True:
-            raw = binary_stream.readline(MAX_PROTOCOL_BYTES + 2)
-            if not raw:
-                return
-            terminated = raw.endswith(b"\n")
-            payload = raw[:-1] if terminated else raw
-            if terminated and payload.endswith(b"\r"):
-                payload = payload[:-1]
-            if len(payload) > MAX_PROTOCOL_BYTES:
-                if not terminated:
-                    _drain_input_line(binary_stream, b"\n")
-                yield None, (-32600, "Invalid Request: request exceeds the 4 MiB protocol limit")
-                continue
-            try:
-                yield payload.decode("utf-8", errors="strict"), None
-            except UnicodeDecodeError:
-                yield None, (-32700, "Parse error: request is not valid UTF-8")
-        return
-
-    while True:
-        raw = stream.readline(MAX_PROTOCOL_BYTES + 2)
-        if not raw:
-            return
-        terminated = raw.endswith("\n")
-        payload = raw[:-1] if terminated else raw
-        if terminated and payload.endswith("\r"):
-            payload = payload[:-1]
-        if len(payload) > MAX_PROTOCOL_BYTES:
-            if not terminated:
-                _drain_input_line(stream, "\n")
-            yield None, (-32600, "Invalid Request: request exceeds the 4 MiB protocol limit")
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in payload:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
             continue
-        try:
-            encoded_size = len(payload.encode("utf-8", errors="strict"))
-        except UnicodeEncodeError:
-            encoded_size = -1
-        if encoded_size > MAX_PROTOCOL_BYTES:
-            if not terminated:
-                _drain_input_line(stream, "\n")
-            yield None, (-32600, "Invalid Request: request exceeds the 4 MiB protocol limit")
-        elif encoded_size < 0:
-            yield None, (-32700, "Parse error: request is not valid UTF-8")
-        else:
-            yield payload, None
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > 256:
+                raise ValueError("JSON nesting exceeds 256 levels")
+        elif char in "]}":
+            depth -= 1
+    return json.loads(payload, parse_constant=_reject_non_finite_json_constant)
 
 
 def _iter_native_output(stream: Any):
@@ -2084,143 +2055,91 @@ def _validate_schema(value: Any, schema: dict, path: str = "arguments") -> None:
                 _validate_schema(item, item_schema, f"{path}[{index}]")
 
 class MCPServer:
-    """MCP server implementing JSON-RPC 2.0 over stdio."""
+    """Official MCP SDK adapter around the native Dear ImGui bridge."""
 
     def __init__(self):
         self.app = ImGuiApp()
-        self._initialized = False
 
     def run(self):
-        """Main loop: read JSON-RPC from stdin, dispatch, write responses to stdout."""
+        """Run the official MCP stdio transport and protocol lifecycle."""
         log(f"{SERVER_NAME} v{SERVER_VERSION} starting (MCP {PROTOCOL_VERSION})")
         log(f"App binary: {APP_BINARY}")
+        asyncio.run(self._run_sdk_server())
 
-        for line, input_error in _iter_mcp_input(sys.stdin):
-            if input_error is not None:
-                code, message = input_error
-                self._send_error(None, code, message)
-                continue
-            if line is None or not line.strip():
-                continue
-            try:
-                msg = _loads_strict_json(line)
-            except _NonFiniteJSONConstant:
-                self._send_error(None, -32700,
-                                 "Parse error: non-finite JSON constants are not allowed")
-                continue
-            except json.JSONDecodeError as e:
-                self._send_error(None, -32700, f"Parse error: {e}")
-                continue
-            except (ValueError, RecursionError) as e:
-                self._send_error(None, -32700, f"Parse error: {e}")
-                continue
+    async def _run_sdk_server(self) -> None:
+        sdk_server = Server(SERVER_NAME)
 
-            try:
-                self._dispatch(msg)
-            except Exception as e:
-                request_id = msg.get("id") if isinstance(msg, dict) else None
-                log(f"Request dispatch error: {e}")
-                self._send_error(request_id, -32603, "Internal error")
+        @sdk_server.list_tools()
+        async def list_tools() -> list[mcp_types.Tool]:
+            return self._sdk_tools()
 
-        # stdin closed, shutdown
-        self.app.stop()
-        log("Server shutting down (stdin closed)")
-
-    def _dispatch(self, msg: dict):
-        """Route a JSON-RPC message."""
-        if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
-            self._send_error(None, -32600, "Invalid Request")
-            return
-
-        method = msg.get("method")
-        if not isinstance(method, str):
-            self._send_error(msg.get("id"), -32600, "Invalid Request: method must be a string")
-            return
-
-        params = msg.get("params", {})
-        if not isinstance(params, dict):
-            if "id" in msg:
-                self._send_error(msg.get("id"), -32602, "Invalid params: expected an object")
-            return
-
-        msg_id = msg.get("id")
-
-        # Notifications (no id)
-        if "id" not in msg:
-            if method == "notifications/initialized":
-                log("Client initialized")
-            elif method == "notifications/cancelled":
-                pass  # Ignore cancellations
-            else:
-                log(f"Unknown notification: {method}")
-            return
-
-        # Requests (have id)
-        if method == "initialize":
-            self._handle_initialize(msg_id, params)
-        elif method == "tools/list":
-            self._handle_tools_list(msg_id)
-        elif method == "tools/call":
-            self._handle_tools_call(msg_id, params)
-        elif method == "ping":
-            self._send_result(msg_id, {})
-        else:
-            self._send_error(msg_id, -32601, f"Method not found: {method}")
-
-    def _handle_initialize(self, msg_id: Any, params: dict):
-        """Handle initialize request."""
-        log(f"Initialize request from {params.get('clientInfo', {}).get('name', 'unknown')}")
-
-        # Start the imgui app
-        if not self.app.is_running():
-            if not self.app.start():
-                log("WARNING: Could not start imgui app (display may not be available)")
-
-        self._initialized = True
-        self._send_result(msg_id, {
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {
-                "tools": {"listChanged": False},
-            },
-            "serverInfo": {
-                "name": SERVER_NAME,
-                "version": SERVER_VERSION,
-            },
-        })
-
-    def _handle_tools_list(self, msg_id: Any):
-        """Handle tools/list request."""
-        self._send_result(msg_id, {"tools": TOOLS})
-
-    def _handle_tools_call(self, msg_id: Any, params: dict):
-        """Handle tools/call request."""
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {})
+        @sdk_server.call_tool()
+        async def call_tool(
+            name: str, arguments: dict[str, Any] | None
+        ) -> mcp_types.CallToolResult:
+            return await self._handle_sdk_tool(name, arguments)
 
         try:
-            if not isinstance(tool_name, str) or not tool_name:
-                raise ValueError("params.name must be a non-empty string")
-            if not isinstance(arguments, dict):
-                raise ValueError("params.arguments must be an object")
-            tool = TOOLS_BY_NAME.get(tool_name)
-            if tool is None:
-                raise ValueError(f"Unknown tool: {tool_name}")
-            _validate_schema(arguments, tool["inputSchema"])
+            async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+                await sdk_server.run(
+                    read_stream,
+                    write_stream,
+                    InitializationOptions(
+                        server_name=SERVER_NAME,
+                        server_version=SERVER_VERSION,
+                        capabilities=sdk_server.get_capabilities(
+                            notification_options=NotificationOptions(),
+                            experimental_capabilities={},
+                        ),
+                    ),
+                )
+        finally:
+            self.app.stop()
+            log("Server shutting down (stdio closed)")
 
-            result = self._call_tool(tool_name, arguments)
-            response = {
-                "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
-            }
-            if (isinstance(result, dict) and
-                    (result.get("type") == "error" or "error" in result)):
-                response["isError"] = True
-            self._send_result(msg_id, response)
-        except Exception as e:
-            log(f"Tool error ({tool_name}): {e}")
-            self._send_result(msg_id, {
-                "content": [{"type": "text", "text": json.dumps({"message": str(e)})}],
-                "isError": True,
-            })
+    def _sdk_tools(self) -> list[mcp_types.Tool]:
+        return [
+            mcp_types.Tool(
+                name=tool["name"],
+                description=tool["description"],
+                inputSchema=tool["inputSchema"],
+            )
+            for tool in TOOLS
+        ]
+
+    async def _handle_sdk_tool(
+        self, name: str, arguments: dict[str, Any] | None
+    ) -> mcp_types.CallToolResult:
+        args = arguments or {}
+        try:
+            tool = TOOLS_BY_NAME.get(name)
+            if tool is None:
+                raise ValueError(f"Unknown tool: {name}")
+            _validate_schema(args, tool["inputSchema"])
+            result = await asyncio.to_thread(self._call_tool, name, args)
+            is_error = bool(
+                isinstance(result, dict)
+                and (result.get("type") == "error" or "error" in result)
+            )
+            return mcp_types.CallToolResult(
+                content=[
+                    mcp_types.TextContent(
+                        type="text", text=json.dumps(result, indent=2)
+                    )
+                ],
+                structuredContent=result,
+                isError=is_error,
+            )
+        except Exception as exc:
+            log(f"Tool error ({name}): {exc}")
+            error = {"message": str(exc)}
+            return mcp_types.CallToolResult(
+                content=[
+                    mcp_types.TextContent(type="text", text=json.dumps(error))
+                ],
+                structuredContent=error,
+                isError=True,
+            )
 
     def _call_tool(self, name: str, args: dict) -> dict:
         """Execute a tool and return the result."""
@@ -2692,26 +2611,6 @@ class MCPServer:
 
         else:
             return {"error": f"Unknown tool: {name}"}
-
-    # ─── JSON-RPC Response Helpers ───────────────────────────────────────────
-
-    def _send_result(self, msg_id: Any, result: dict):
-        """Send a JSON-RPC success response."""
-        self._write({"jsonrpc": "2.0", "id": msg_id, "result": result})
-
-    def _send_error(self, msg_id: Any, code: int, message: str, data: Any = None):
-        """Send a JSON-RPC error response."""
-        error = {"code": code, "message": message}
-        if data is not None:
-            error["data"] = data
-        self._write({"jsonrpc": "2.0", "id": msg_id, "error": error})
-
-    def _write(self, msg: dict):
-        """Write a JSON-RPC message to stdout (newline-delimited)."""
-        line = json.dumps(msg, separators=(",", ":"))
-        sys.stdout.write(line + "\n")
-        sys.stdout.flush()
-
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 

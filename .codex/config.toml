@@ -1,3 +1,6 @@
 [mcp_servers.imgui]
-command = "python3"
-args = ["server.py"]
+command = "uv"
+args = ["run", "python", "server.py"]
+cwd = ".."
+required = true
+startup_timeout_sec = 20.0

@@ -2,8 +2,8 @@
   "context_servers": {
     "imgui": {
       "source": "custom",
-      "command": "python3",
-      "args": ["server.py"],
+      "command": "uv",
+      "args": ["run", "python", "server.py"],
       "env": {}
     }
   }

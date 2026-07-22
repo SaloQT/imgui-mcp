@@ -94,6 +94,7 @@ Extract zip → double-click install.bat
 ```bash
 git clone https://github.com/SaloQT/imgui-mcp.git
 cd imgui-mcp
+uv sync       # installs the pinned official MCP Python SDK
 make build    # requires: cmake, g++, libsdl2-dev, libgl1-mesa-dev
 ./setup.sh
 ```
@@ -101,7 +102,7 @@ make build    # requires: cmake, g++, libsdl2-dev, libgl1-mesa-dev
 ### Verify it works
 
 ```bash
-python3 demo.py   # runs a full feature demonstration
+uv run python demo.py   # runs a full feature demonstration
 ```
 
 ---
@@ -375,7 +376,9 @@ imgui_screenshot()
 
 ```
 imgui-mcp/
-├── server.py              MCP server — 71 tools, zero Python deps
+├── server.py              Official Python SDK server — 71 tools
+├── pyproject.toml         Python package and MCP SDK dependency
+├── uv.lock                Reproducible Python dependency lock
 ├── src/
 │   ├── types.h            Shared enums (102 widget types), structs, globals
 │   ├── main.cpp           SDL2+OpenGL3 lifecycle, stdin reader, emit helpers
@@ -403,7 +406,9 @@ imgui-mcp/
 └── .continue/config.yaml  Continue config
 ```
 
-**Wire protocol:** MCP 2025-06-18 · JSON-RPC 2.0 · stdio transport · newline-delimited
+**Wire protocol:** MCP via the official Python SDK · stdio transport. Local stdio
+servers do not use OAuth; clients may display authentication as “Unsupported” or
+“N/A”, which is expected.
 
 ---
 

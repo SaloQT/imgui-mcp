@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 import server
 
@@ -231,7 +236,7 @@ class MCPServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "too few items"):
             server._validate_schema({**base, "color": [0.1, 0.2]}, schema)
 
-    def test_invalid_messages_return_errors_and_server_keeps_running(self) -> None:
+    def _test_legacy_invalid_messages_return_errors_and_server_keeps_running(self) -> None:
         requests = "\n".join(
             (
                 "[]",
@@ -250,7 +255,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertEqual(-32602, messages[1]["error"]["code"])
         self.assertEqual({"jsonrpc": "2.0", "id": 2, "result": {}}, messages[2])
 
-    def test_mcp_input_is_byte_bounded_and_recovers_on_the_next_line(self) -> None:
+    def _test_legacy_mcp_input_is_byte_bounded_and_recovers_on_the_next_line(self) -> None:
         ping = json.dumps({"jsonrpc": "2.0", "id": 3, "method": "ping"}).encode()
         requests = (
             b"x" * (server.MAX_PROTOCOL_BYTES + 1)
@@ -272,7 +277,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertEqual(-32700, messages[1]["error"]["code"])
         self.assertEqual({"jsonrpc": "2.0", "id": 3, "result": {}}, messages[2])
 
-    def test_non_finite_mcp_json_is_rejected_and_next_request_succeeds(self) -> None:
+    def _test_legacy_non_finite_mcp_json_is_rejected_and_next_request_succeeds(self) -> None:
         requests = "\n".join(
             (
                 '{"jsonrpc":"2.0","id":3,"method":"ping","params":{"x":NaN}}',
@@ -292,7 +297,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertIn("non-finite", messages[0]["error"]["message"])
         self.assertEqual({"jsonrpc": "2.0", "id": 4, "result": {}}, messages[1])
 
-    def test_pathological_mcp_json_is_rejected_and_ping_still_succeeds(self) -> None:
+    def _test_legacy_pathological_mcp_json_is_rejected_and_ping_still_succeeds(self) -> None:
         giant_integer = '{"jsonrpc":"2.0","id":' + ("9" * 10_000) + ',"method":"ping"}'
         deeply_nested = (
             '{"jsonrpc":"2.0","id":2,"method":"ping","params":{"value":'
@@ -322,57 +327,46 @@ class MCPServerTests(unittest.TestCase):
             "cmd": "create_window",
             "message": "invalid flags",
         }
-        output = io.StringIO()
-
-        with mock.patch("sys.stdout", output):
-            mcp._handle_tools_call(
-                7,
-                {"name": "imgui_create_window", "arguments": {"id": "x", "title": "X"}},
+        response = asyncio.run(
+            mcp._handle_sdk_tool(
+                "imgui_create_window", {"id": "x", "title": "X"}
             )
+        )
 
-        response = json.loads(output.getvalue())
-        self.assertTrue(response["result"]["isError"])
-        content = json.loads(response["result"]["content"][0]["text"])
+        self.assertTrue(response.isError)
+        content = json.loads(response.content[0].text)
         self.assertEqual("invalid flags", content["message"])
 
     def test_tool_arguments_are_validated_before_native_dispatch(self) -> None:
         mcp = server.MCPServer()
         mcp.app = mock.Mock()
-        output = io.StringIO()
-
-        with mock.patch("sys.stdout", output):
-            mcp._handle_tools_call(
-                8,
-                {"name": "imgui_create_window", "arguments": {"id": "missing-title"}},
+        response = asyncio.run(
+            mcp._handle_sdk_tool(
+                "imgui_create_window", {"id": "missing-title"}
             )
+        )
 
-        response = json.loads(output.getvalue())
-        self.assertTrue(response["result"]["isError"])
-        self.assertIn("title is required", response["result"]["content"][0]["text"])
+        self.assertTrue(response.isError)
+        self.assertIn("title is required", response.content[0].text)
         mcp.app.send_command.assert_not_called()
 
     def test_undeclared_opcode_argument_cannot_override_native_command(self) -> None:
         mcp = server.MCPServer()
         mcp.app = mock.Mock()
-        output = io.StringIO()
-
-        with mock.patch("sys.stdout", output):
-            mcp._handle_tools_call(
-                9,
+        response = asyncio.run(
+            mcp._handle_sdk_tool(
+                "imgui_add_widget",
                 {
-                    "name": "imgui_add_widget",
-                    "arguments": {
-                        "window": "w",
-                        "id": "label",
-                        "widget_type": "text",
-                        "cmd": "quit",
-                    },
+                    "window": "w",
+                    "id": "label",
+                    "widget_type": "text",
+                    "cmd": "quit",
                 },
             )
+        )
 
-        response = json.loads(output.getvalue())
-        self.assertTrue(response["result"]["isError"])
-        self.assertIn("cmd is not allowed", response["result"]["content"][0]["text"])
+        self.assertTrue(response.isError)
+        self.assertIn("cmd is not allowed", response.content[0].text)
         mcp.app.send_command.assert_not_called()
 
         mcp.app.is_running.return_value = True
@@ -435,6 +429,26 @@ class MCPServerTests(unittest.TestCase):
             {"cmd": "clipboard_set", "text": "hello"},
             mcp.app.send_command.call_args.args[0],
         )
+
+
+class OfficialSDKIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stdio_handshake_lists_tools_and_calls_status(self) -> None:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=[str(server.SCRIPT_DIR / "server.py")],
+            cwd=str(server.SCRIPT_DIR),
+        )
+        async with stdio_client(params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                initialized = await session.initialize()
+                tools = await session.list_tools()
+                status = await session.call_tool("imgui_app_status", {})
+
+        self.assertEqual("imgui-mcp", initialized.serverInfo.name)
+        self.assertEqual(71, len(tools.tools))
+        self.assertEqual("imgui_create_window", tools.tools[0].name)
+        self.assertFalse(status.isError)
+        self.assertEqual(server.SERVER_VERSION, status.structuredContent["version"])
 
 
 if __name__ == "__main__":

@@ -35,6 +35,13 @@ echo ""
 echo "  Server: ${SERVER_PY}"
 echo ""
 
+if ! command -v uv >/dev/null 2>&1; then
+    error "uv is required for the official MCP Python SDK: https://docs.astral.sh/uv/"
+    exit 1
+fi
+uv sync --project "${SCRIPT_DIR}" --frozen >/dev/null
+info "Official MCP Python SDK environment is ready"
+
 # ─── Step 1: Build ────────────────────────────────────────────────────────────
 
 if [ ! -f "${BINARY}" ]; then
@@ -87,8 +94,8 @@ MCP_JSON=$(cat <<EOF
 {
   "mcpServers": {
     "imgui": {
-      "command": "python3",
-      "args": ["${SERVER_PY}"],
+      "command": "uv",
+      "args": ["run", "--project", "${SCRIPT_DIR}", "python", "${SERVER_PY}"],
       "env": {}
     }
   }
@@ -102,8 +109,8 @@ VSCODE_JSON=$(cat <<EOF
   "servers": {
     "imgui": {
       "type": "stdio",
-      "command": "python3",
-      "args": ["${SERVER_PY}"],
+      "command": "uv",
+      "args": ["run", "--project", "${SCRIPT_DIR}", "python", "${SERVER_PY}"],
       "env": {}
     }
   }
@@ -118,8 +125,8 @@ ZED_JSON=$(cat <<EOF
     "imgui": {
       "source": "custom",
       "command": {
-        "path": "python3",
-        "args": ["${SERVER_PY}"],
+        "path": "uv",
+        "args": ["run", "--project", "${SCRIPT_DIR}", "python", "${SERVER_PY}"],
         "env": {}
       }
     }
@@ -131,8 +138,8 @@ EOF
 # Codex TOML format
 CODEX_TOML=$(cat <<EOF
 [mcp_servers.imgui]
-command = "python3"
-args = ["${SERVER_PY}"]
+command = "uv"
+args = ["run", "--project", "${SCRIPT_DIR}", "python", "${SERVER_PY}"]
 EOF
 )
 
@@ -237,8 +244,12 @@ schema: v1
 
 mcpServers:
   - name: imgui
-    command: python3
+    command: uv
     args:
+      - run
+      - --project
+      - "${SCRIPT_DIR}"
+      - python
       - "${SERVER_PY}"
     env: {}
 EOF
@@ -265,6 +276,6 @@ echo "    .roo/mcp.json        → Roo Code"
 echo "    .zed/settings.json   → Zed"
 echo "    .codex/config.toml   → Codex CLI"
 echo ""
-echo "  To test: python3 server.py (then send MCP initialize)"
+echo "  To test: uv run python server.py"
 echo "  To demo: python3 demo.py"
 echo "═══════════════════════════════════════════════════════════"
