@@ -653,7 +653,7 @@ static Widget* find_in_children(std::vector<Widget>& children, const std::string
 
 // Find a widget by id anywhere inside a window (top-level map or nested
 // children vectors).
-static Widget* find_widget_in_window(WindowState& win, const std::string& id) {
+Widget* find_widget_in_window(WindowState& win, const std::string& id) {
     auto it = win.widgets.find(id);
     if (it != win.widgets.end()) return &it->second;
     for (auto& [wid, w] : win.widgets) {
@@ -757,6 +757,84 @@ static EaseType parse_ease_type(const std::string& s) {
     if (s == "elastic") return EaseType::Elastic;
     if (s == "back") return EaseType::Back;
     return EaseType::Linear;
+}
+
+static bool is_ease_type(const std::string& ease) {
+    static const std::vector<std::string> names = {
+        "linear", "ease_in", "ease_out", "ease_in_out", "bounce", "elastic", "back"};
+    return std::find(names.begin(), names.end(), ease) != names.end();
+}
+
+static const char* ease_type_name(EaseType ease) {
+    switch (ease) {
+        case EaseType::EaseIn: return "ease_in";
+        case EaseType::EaseOut: return "ease_out";
+        case EaseType::EaseInOut: return "ease_in_out";
+        case EaseType::Bounce: return "bounce";
+        case EaseType::Elastic: return "elastic";
+        case EaseType::Back: return "back";
+        default: return "linear";
+    }
+}
+
+static bool is_animation_property(const std::string& property) {
+    static const std::vector<std::string> properties = {
+        "value", "opacity", "pos_x", "pos_y", "size_x", "size_y", "int_value"};
+    return std::find(properties.begin(), properties.end(), property) != properties.end();
+}
+
+static const ImWchar* font_glyph_ranges(const std::string& preset) {
+    ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+    if (preset == "default" || preset == "unicode" || preset == "symbols")
+        return nullptr; // ImGui 1.92 resolves these dynamically across merged sources.
+    if (preset == "cyrillic") return atlas->GetGlyphRangesCyrillic();
+    if (preset == "greek") return atlas->GetGlyphRangesGreek();
+    if (preset == "vietnamese") return atlas->GetGlyphRangesVietnamese();
+    if (preset == "thai") return atlas->GetGlyphRangesThai();
+    if (preset == "japanese") return atlas->GetGlyphRangesJapanese();
+    if (preset == "korean") return atlas->GetGlyphRangesKorean();
+    if (preset == "chinese_full") return atlas->GetGlyphRangesChineseFull();
+    if (preset == "chinese_simplified")
+        return atlas->GetGlyphRangesChineseSimplifiedCommon();
+    throw std::invalid_argument("unknown font glyph_ranges preset: " + preset);
+}
+
+static ImFont* load_font_source(const std::string& id, const std::string& path,
+                                float size_pixels, const std::string& glyph_ranges,
+                                const std::string& merge_into) {
+    if (id.empty() || id.size() > 128)
+        throw std::invalid_argument("font id must contain 1-128 characters");
+    if (id == "default")
+        throw std::invalid_argument("font id 'default' is reserved");
+    if (g_fonts.size() >= 64)
+        throw std::length_error("font count exceeds the limit of 64");
+    if (g_fonts.count(id) != 0)
+        throw std::invalid_argument("font id is already loaded: " + id);
+    if (size_pixels < 8.0f || size_pixels > 96.0f)
+        throw std::invalid_argument("font size_pixels must be between 8 and 96");
+    std::error_code font_path_error;
+    if (path.empty() || !std::filesystem::is_regular_file(path, font_path_error) ||
+        font_path_error)
+        throw std::invalid_argument("font file does not exist: " + path);
+
+    ImFontConfig config;
+    if (!merge_into.empty()) {
+        const auto target = g_fonts.find(merge_into);
+        if (target == g_fonts.end())
+            throw std::invalid_argument("merge target font is not loaded: " + merge_into);
+        if (!target->second.merge_into.empty())
+            throw std::invalid_argument("merge target must be a base font: " + merge_into);
+        config.MergeMode = true;
+        config.DstFont = target->second.font;
+    }
+    ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(
+        path.c_str(), size_pixels, merge_into.empty() ? nullptr : &config,
+        font_glyph_ranges(glyph_ranges));
+    if (!font)
+        throw std::runtime_error("failed to load font: " + path);
+    g_fonts.emplace(id, LoadedFont{
+        id, path, size_pixels, glyph_ranges, merge_into, font});
+    return font;
 }
 
 
@@ -3315,19 +3393,42 @@ void process_command(const json& cmd) {
         float duration = cmd.value("duration", 1.0f);
         std::string ease_str = cmd.value("ease", "linear");
         bool loop = cmd.value("loop", false);
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            const auto window = g_windows.find(win_id);
+            if (window == g_windows.end() ||
+                find_widget_in_window(window->second, wid) == nullptr)
+                throw std::invalid_argument("animation target does not exist");
+        }
+        if (!is_animation_property(prop))
+            throw std::invalid_argument("unsupported animation property: " + prop);
+        if (!is_ease_type(ease_str))
+            throw std::invalid_argument("unsupported animation easing: " + ease_str);
+        if (!std::isfinite(duration) || duration <= 0.0f)
+            throw std::invalid_argument("animation duration must be positive");
         Animation anim;
         anim.window_id = win_id;
         anim.widget_id = wid;
         anim.property = prop;
         anim.from = from;
         anim.to = to;
-        anim.duration = duration > 0.0f ? duration : 0.001f;
+        anim.duration = duration;
         anim.ease = parse_ease_type(ease_str);
         anim.loop = loop;
         anim.active = true;
         anim.elapsed = 0.0f;
         {
             std::lock_guard<std::mutex> lock(g_anim_mutex);
+            g_animations.erase(
+                std::remove_if(g_animations.begin(), g_animations.end(),
+                    [&](const Animation& existing) {
+                        return existing.window_id == win_id &&
+                               existing.widget_id == wid &&
+                               existing.property == prop;
+                    }),
+                g_animations.end());
+            if (g_animations.size() >= 1024)
+                throw std::length_error("animation count exceeds the limit of 1024");
             g_animations.push_back(anim);
         }
         emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"widget", wid},
@@ -3729,7 +3830,7 @@ void process_command(const json& cmd) {
 
     } else if (type == "export_json") {
         std::string path = cmd.value("path", "");
-        std::lock_guard<std::mutex> lock(g_mutex);
+        std::scoped_lock lock(g_mutex, g_anim_mutex);
         validate_state_limits(g_windows, g_window_order);
         json layout;
         layout["version"] = "1.0";
@@ -3759,6 +3860,31 @@ void process_command(const json& cmd) {
             wins.push_back(wj);
         }
         layout["windows"] = wins;
+        json fonts = json::array();
+        for (const auto& [id, font] : g_fonts) {
+            fonts.push_back({{"id", id}, {"path", font.path},
+                             {"size_pixels", font.size_pixels},
+                             {"glyph_ranges", font.glyph_ranges},
+                             {"merge_into", font.merge_into}});
+        }
+        layout["fonts"] = std::move(fonts);
+        layout["active_font"] = "default";
+        for (const auto& [id, font] : g_fonts) {
+            if (font.merge_into.empty() && ImGui::GetIO().FontDefault == font.font) {
+                layout["active_font"] = id;
+                break;
+            }
+        }
+        json animations = json::array();
+        for (const auto& animation : g_animations) {
+            animations.push_back({
+                {"window", animation.window_id}, {"widget", animation.widget_id},
+                {"property", animation.property}, {"from", animation.from},
+                {"to", animation.to}, {"duration", animation.duration},
+                {"elapsed", animation.elapsed}, {"ease", ease_type_name(animation.ease)},
+                {"loop", animation.loop}, {"active", animation.active}});
+        }
+        layout["animations"] = std::move(animations);
         json resp;
         resp["type"] = "export";
         resp["format"] = "json";
@@ -3834,14 +3960,167 @@ void process_command(const json& cmd) {
         }
         validate_state_limits(imported_windows, imported_order);
 
+        struct ImportedFontSpec {
+            std::string id;
+            std::string path;
+            float size_pixels;
+            std::string glyph_ranges;
+            std::string merge_into;
+        };
+        std::vector<ImportedFontSpec> imported_fonts;
+        if (layout.contains("fonts")) {
+            if (!layout["fonts"].is_array())
+                throw std::invalid_argument("imported fonts must be an array");
+            if (layout["fonts"].size() > 64)
+                throw std::length_error("font count exceeds the limit of 64");
+            std::map<std::string, bool> imported_font_ids;
+            for (const auto& font_j : layout["fonts"]) {
+                if (!font_j.is_object())
+                    throw std::invalid_argument("every imported font must be an object");
+                ImportedFontSpec font{
+                    font_j.value("id", ""), font_j.value("path", ""),
+                    font_j.value("size_pixels", 16.0f),
+                    font_j.value("glyph_ranges", "unicode"),
+                    font_j.value("merge_into", "")};
+                if (font.id.empty() || font.id.size() > 128)
+                    throw std::invalid_argument("font id must contain 1-128 characters");
+                if (font.id == "default")
+                    throw std::invalid_argument("font id 'default' is reserved");
+                if (!imported_font_ids.emplace(font.id, true).second)
+                    throw std::invalid_argument("duplicate imported font id: " + font.id);
+                if (font.size_pixels < 8.0f || font.size_pixels > 96.0f)
+                    throw std::invalid_argument("font size_pixels must be between 8 and 96");
+                font_glyph_ranges(font.glyph_ranges);
+                std::error_code path_error;
+                if (!std::filesystem::is_regular_file(font.path, path_error) || path_error)
+                    throw std::invalid_argument("font file does not exist: " + font.path);
+                const auto existing = g_fonts.find(font.id);
+                if (existing != g_fonts.end()) {
+                    const LoadedFont& loaded = existing->second;
+                    if (loaded.path != font.path || loaded.size_pixels != font.size_pixels ||
+                        loaded.glyph_ranges != font.glyph_ranges ||
+                        loaded.merge_into != font.merge_into)
+                        throw std::invalid_argument(
+                            "loaded font conflicts with imported font: " + font.id);
+                }
+                imported_fonts.push_back(std::move(font));
+            }
+            for (const auto& font : imported_fonts) {
+                if (!font.merge_into.empty() && g_fonts.count(font.merge_into) == 0 &&
+                    imported_font_ids.count(font.merge_into) == 0)
+                    throw std::invalid_argument(
+                        "merge target font is not loaded: " + font.merge_into);
+                if (!font.merge_into.empty()) {
+                    const auto loaded_target = g_fonts.find(font.merge_into);
+                    if (loaded_target != g_fonts.end() &&
+                        !loaded_target->second.merge_into.empty())
+                        throw std::invalid_argument(
+                            "merge target must be a base font: " + font.merge_into);
+                    const auto imported_target = std::find_if(
+                        imported_fonts.begin(), imported_fonts.end(),
+                        [&](const ImportedFontSpec& candidate) {
+                            return candidate.id == font.merge_into;
+                        });
+                    if (imported_target != imported_fonts.end() &&
+                        !imported_target->merge_into.empty())
+                        throw std::invalid_argument(
+                            "merge target must be a base font: " + font.merge_into);
+                }
+            }
+            const size_t new_font_count = static_cast<size_t>(std::count_if(
+                imported_fonts.begin(), imported_fonts.end(),
+                [](const ImportedFontSpec& font) {
+                    return g_fonts.count(font.id) == 0;
+                }));
+            if (g_fonts.size() + new_font_count > 64)
+                throw std::length_error("font count exceeds the limit of 64");
+        }
+
+        std::vector<Animation> imported_animations;
+        if (layout.contains("animations")) {
+            if (!layout["animations"].is_array())
+                throw std::invalid_argument("imported animations must be an array");
+            if (layout["animations"].size() > 1024)
+                throw std::length_error("animation count exceeds the limit of 1024");
+            for (const auto& animation_j : layout["animations"]) {
+                if (!animation_j.is_object())
+                    throw std::invalid_argument("every imported animation must be an object");
+                Animation animation;
+                animation.window_id = animation_j.value("window", "");
+                animation.widget_id = animation_j.value("widget", "");
+                animation.property = animation_j.value("property", "value");
+                const auto window = imported_windows.find(animation.window_id);
+                if (window == imported_windows.end() ||
+                    find_widget_in_window(window->second, animation.widget_id) == nullptr)
+                    throw std::invalid_argument("imported animation target does not exist");
+                if (!is_animation_property(animation.property))
+                    throw std::invalid_argument("unsupported imported animation property: " + animation.property);
+                animation.from = animation_j.value("from", 0.0f);
+                animation.to = animation_j.value("to", 1.0f);
+                animation.duration = animation_j.value("duration", 1.0f);
+                if (!std::isfinite(animation.from) || !std::isfinite(animation.to) ||
+                    !std::isfinite(animation.duration) || animation.duration <= 0.0f)
+                    throw std::invalid_argument("imported animation duration must be positive");
+                animation.elapsed = std::max(0.0f, animation_j.value("elapsed", 0.0f));
+                const std::string ease = animation_j.value("ease", "linear");
+                if (!is_ease_type(ease))
+                    throw std::invalid_argument("unsupported imported animation easing: " + ease);
+                animation.ease = parse_ease_type(ease);
+                animation.loop = animation_j.value("loop", false);
+                animation.active = animation_j.value("active", true);
+                imported_animations.push_back(std::move(animation));
+            }
+        }
+
+        std::string active_font_id;
+        if (layout.contains("active_font")) {
+            active_font_id = layout.value("active_font", "default");
+            const auto loaded_active = g_fonts.find(active_font_id);
+            if (loaded_active != g_fonts.end() && !loaded_active->second.merge_into.empty())
+                throw std::invalid_argument(
+                    "merged font sources are not independently selectable: " + active_font_id);
+            if (active_font_id != "default" && g_fonts.count(active_font_id) == 0 &&
+                std::none_of(imported_fonts.begin(), imported_fonts.end(),
+                    [&](const ImportedFontSpec& font) {
+                        return font.id == active_font_id && font.merge_into.empty();
+                    }))
+                throw std::invalid_argument(
+                    "imported active font is not loaded: " + active_font_id);
+        }
+
+        auto load_imported_fonts = [&](bool merged) {
+            for (const auto& font : imported_fonts) {
+                if ((!font.merge_into.empty() != merged) || g_fonts.count(font.id) != 0)
+                    continue;
+                load_font_source(font.id, font.path, font.size_pixels,
+                                 font.glyph_ranges, font.merge_into);
+            }
+        };
+        load_imported_fonts(false);
+        load_imported_fonts(true);
+
+        ImFont* imported_active_font = ImGui::GetIO().FontDefault;
+        if (!active_font_id.empty()) {
+            imported_active_font = nullptr;
+            if (active_font_id != "default")
+                imported_active_font = g_fonts.at(active_font_id).font;
+        }
+
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             push_undo_state();
             g_windows.swap(imported_windows);
             g_window_order.swap(imported_order);
         }
+        {
+            std::lock_guard<std::mutex> lock(g_anim_mutex);
+            g_animations.swap(imported_animations);
+        }
+        ImGui::GetIO().FontDefault = imported_active_font;
         emit_json({{"type", "ack"}, {"cmd", type},
-                   {"windows", static_cast<int>(g_window_order.size())}});
+                   {"windows", static_cast<int>(g_window_order.size())},
+                   {"fonts", static_cast<int>(imported_fonts.size())},
+                   {"animations", static_cast<int>(g_animations.size())}});
 
     } else if (type == "load_texture") {
         std::string id = cmd.value("id", "");
@@ -3904,39 +4183,12 @@ void process_command(const json& cmd) {
         const std::string id = cmd.value("id", "");
         const std::string path = cmd.value("path", "");
         const float size_pixels = cmd.value("size_pixels", 16.0f);
-        if (id.empty() || id.size() > 128) {
-            emit_json({{"type", "error"}, {"cmd", type},
-                       {"message", "font id must contain 1-128 characters"}});
-            return;
-        }
-        if (g_fonts.count(id) != 0) {
-            emit_json({{"type", "error"}, {"cmd", type},
-                       {"message", "font id is already loaded: " + id}});
-            return;
-        }
-        if (size_pixels < 8.0f || size_pixels > 96.0f) {
-            emit_json({{"type", "error"}, {"cmd", type},
-                       {"message", "font size_pixels must be between 8 and 96"}});
-            return;
-        }
-        std::error_code font_path_error;
-        if (path.empty() ||
-            !std::filesystem::is_regular_file(path, font_path_error) ||
-            font_path_error) {
-            emit_json({{"type", "error"}, {"cmd", type},
-                       {"message", "font file does not exist: " + path}});
-            return;
-        }
-        ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(
-            path.c_str(), size_pixels);
-        if (!font) {
-            emit_json({{"type", "error"}, {"cmd", type},
-                       {"message", "failed to load font: " + path}});
-            return;
-        }
-        g_fonts.emplace(id, LoadedFont{id, path, size_pixels, font});
+        const std::string glyph_ranges = cmd.value("glyph_ranges", "unicode");
+        const std::string merge_into = cmd.value("merge_into", "");
+        load_font_source(id, path, size_pixels, glyph_ranges, merge_into);
         emit_json({{"type", "ack"}, {"cmd", type}, {"id", id},
-                   {"path", path}, {"size_pixels", size_pixels}});
+                   {"path", path}, {"size_pixels", size_pixels},
+                   {"glyph_ranges", glyph_ranges}, {"merge_into", merge_into}});
     } else if (type == "set_font") {
         const std::string id = cmd.value("id", "default");
         if (id == "default") {
@@ -3946,6 +4198,11 @@ void process_command(const json& cmd) {
             if (it == g_fonts.end()) {
                 emit_json({{"type", "error"}, {"cmd", type},
                            {"message", "font is not loaded: " + id}});
+                return;
+            }
+            if (!it->second.merge_into.empty()) {
+                emit_json({{"type", "error"}, {"cmd", type},
+                           {"message", "merged font sources are not independently selectable: " + id}});
                 return;
             }
             ImGui::GetIO().FontDefault = it->second.font;
@@ -3959,7 +4216,10 @@ void process_command(const json& cmd) {
         for (const auto& [id, font] : g_fonts) {
             fonts.push_back({{"id", id}, {"path", font.path},
                              {"size_pixels", font.size_pixels},
-                             {"active", ImGui::GetIO().FontDefault == font.font}});
+                             {"glyph_ranges", font.glyph_ranges},
+                             {"merge_into", font.merge_into},
+                             {"active", font.merge_into.empty() &&
+                                        ImGui::GetIO().FontDefault == font.font}});
         }
         emit_json({{"type", "fonts"}, {"cmd", type}, {"fonts", fonts}});
     } else if (type == "set_theme") {

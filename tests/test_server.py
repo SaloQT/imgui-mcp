@@ -439,7 +439,13 @@ class MCPServerTests(unittest.TestCase):
 
         mcp._call_tool(
             "imgui_load_font",
-            {"id": "ui", "path": "/fonts/ui.ttf", "size_pixels": 18},
+            {
+                "id": "ui",
+                "path": "/fonts/ui.ttf",
+                "size_pixels": 18,
+                "glyph_ranges": "symbols",
+                "merge_into": "body",
+            },
         )
         self.assertEqual(
             {
@@ -447,6 +453,8 @@ class MCPServerTests(unittest.TestCase):
                 "id": "ui",
                 "path": "/fonts/ui.ttf",
                 "size_pixels": 18,
+                "glyph_ranges": "symbols",
+                "merge_into": "body",
             },
             mcp.app.send_command.call_args.args[0],
         )

@@ -119,8 +119,8 @@ verify_manifest() {
         *) echo "Unknown archive kind: ${kind}" >&2; return 2 ;;
     esac
 
-    if grep -Eq '(^|/)__pycache__/|\.py[co]$' "${listing}"; then
-        echo "Archive contains Python cache files: ${archive}" >&2
+    if grep -Eq '(^|/)__pycache__/|\.py[co]$|(^|/)[^/]+\.egg-info/' "${listing}"; then
+        echo "Archive contains generated Python metadata or cache files: ${archive}" >&2
         return 1
     fi
 
