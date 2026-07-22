@@ -574,6 +574,7 @@ DRAW_COMMAND_TYPES = [
     "line", "rect", "rect_filled", "circle", "circle_filled",
     "triangle", "triangle_filled", "quad", "quad_filled", "text", "polyline",
     "convex_poly", "convex_poly_filled", "bezier_cubic", "bezier_quadratic",
+    "ellipse", "ellipse_filled", "rect_gradient", "arc",
 ]
 
 WINDOW_FLAGS = {
@@ -990,13 +991,25 @@ TOOLS = [
     {
         "name": "imgui_draw",
         "description": (
-            "Issue draw commands to a window's draw list. Supports lines, rects, "
-            "circles, triangles, text, polylines, convex polygons, and bezier curves."
+            "Append draw commands to a named layer in a window. Repeated calls preserve "
+            "earlier geometry by default. Supports lines, shapes, gradients, ellipses, "
+            "arcs, text, polygons, and bezier curves."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "window": {"type": "string", "description": "Target window id"},
+                "id": {
+                    "type": "string",
+                    "description": "Named draw layer id (default: draw_list)",
+                    "default": "draw_list",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["append", "replace"],
+                    "description": "Append to the layer (default) or replace it",
+                    "default": "append",
+                },
                 "commands": {
                     "type": "array",
                     "maxItems": MAX_DRAW_COMMANDS,
@@ -1042,6 +1055,21 @@ TOOLS = [
                                 "maxItems": 4,
                                 "items": {"type": "number"},
                                 "description": "RGBA color [r,g,b,a] each 0.0-1.0",
+                            },
+                            "color2": {
+                                "type": "array", "minItems": 4, "maxItems": 4,
+                                "items": {"type": "number"},
+                                "description": "Second RGBA corner color for rect_gradient",
+                            },
+                            "color3": {
+                                "type": "array", "minItems": 4, "maxItems": 4,
+                                "items": {"type": "number"},
+                                "description": "Third RGBA corner color for rect_gradient",
+                            },
+                            "color4": {
+                                "type": "array", "minItems": 4, "maxItems": 4,
+                                "items": {"type": "number"},
+                                "description": "Fourth RGBA corner color for rect_gradient",
                             },
                             "thickness": {
                                 "type": "number",
@@ -2278,6 +2306,8 @@ class MCPServer:
             cmd = {
                 "cmd": "draw",
                 "window": args.get("window", ""),
+                "id": args.get("id", "draw_list"),
+                "mode": args.get("mode", "append"),
                 "commands": args.get("commands", []),
             }
             return self.app.send_command(cmd) or {"error": "no response"}

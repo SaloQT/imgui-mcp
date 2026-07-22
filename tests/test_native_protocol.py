@@ -126,6 +126,61 @@ class NativeProtocolTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.app.cleanup()
 
+    def test_draw_calls_append_by_default_and_named_layers_stay_independent(self) -> None:
+        self.app.send({"cmd": "create_window", "id": "scene", "title": "Scene"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        self.app.send({
+            "cmd": "draw", "window": "scene", "id": "background",
+            "commands": [{
+                "type": "rect_gradient", "p1": [0, 0], "p2": [100, 100],
+                "color": [0.1, 0.2, 0.3, 1], "color2": [0.2, 0.3, 0.4, 1],
+                "color3": [0.3, 0.4, 0.5, 1], "color4": [0.4, 0.5, 0.6, 1],
+            }],
+        })
+        first = self.app.read_json()
+        self.assertEqual("append", first.get("mode"), first)
+        self.assertEqual(1, first.get("command_count"), first)
+
+        self.app.send({
+            "cmd": "draw", "window": "scene", "id": "background",
+            "commands": [{"type": "ellipse_filled", "p1": [50, 50],
+                           "p2": [20, 10], "color": [1, 1, 1, 1]}],
+        })
+        appended = self.app.read_json()
+        self.assertEqual(2, appended.get("command_count"), appended)
+
+        self.app.send({
+            "cmd": "draw", "window": "scene", "id": "foreground",
+            "commands": [{"type": "arc", "p1": [50, 50],
+                           "p2": [25, 0], "p3": [3.14, 0],
+                           "color": [1, 0, 0, 1]}],
+        })
+        foreground = self.app.read_json()
+        self.assertEqual(1, foreground.get("command_count"), foreground)
+
+        self.app.send({"cmd": "export_json"})
+        exported = self.app.read_json()
+        widgets = exported["json"]["windows"][0]["widgets"]
+        layers = {widget["id"]: widget for widget in widgets}
+        self.assertEqual(2, len(layers["background"]["draw_commands"]))
+        self.assertEqual(1, len(layers["foreground"]["draw_commands"]))
+        self.assertEqual(16, layers["background"]["draw_commands"][0]["type"])
+        for actual, expected in zip(
+            layers["background"]["draw_commands"][0]["color2"],
+            [0.2, 0.3, 0.4, 1.0],
+        ):
+            self.assertAlmostEqual(expected, actual)
+
+        self.app.send({
+            "cmd": "draw", "window": "scene", "id": "background",
+            "mode": "replace",
+            "commands": [{"type": "line", "p1": [0, 0], "p2": [1, 1]}],
+        })
+        replaced = self.app.read_json()
+        self.assertEqual("replace", replaced.get("mode"), replaced)
+        self.assertEqual(1, replaced.get("command_count"), replaced)
+
     def test_font_registry_defaults_and_rejects_missing_files(self) -> None:
         self.app.send({"cmd": "list_fonts"})
         fonts = self.app.read_json()

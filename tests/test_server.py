@@ -465,6 +465,26 @@ class MCPServerTests(unittest.TestCase):
             mcp.app.send_command.call_args.args[0],
         )
 
+        mcp._call_tool(
+            "imgui_draw",
+            {
+                "window": "scene",
+                "id": "foreground",
+                "mode": "replace",
+                "commands": [{"type": "ellipse", "p1": [10, 10], "p2": [5, 3]}],
+            },
+        )
+        self.assertEqual(
+            {
+                "cmd": "draw",
+                "window": "scene",
+                "id": "foreground",
+                "mode": "replace",
+                "commands": [{"type": "ellipse", "p1": [10, 10], "p2": [5, 3]}],
+            },
+            mcp.app.send_command.call_args.args[0],
+        )
+
         mcp._call_tool("imgui_list_fonts", {})
         self.assertEqual(
             {"cmd": "list_fonts"}, mcp.app.send_command.call_args.args[0]

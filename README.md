@@ -159,7 +159,7 @@ uv run python demo.py   # runs a full feature demonstration
 
 | Tool | Description |
 |------|-------------|
-| `imgui_draw` | Draw directly on a window's canvas: `line`, `rect`, `rect_filled`, `circle`, `circle_filled`, `triangle`, `triangle_filled`, `text`, `polyline`, `convex_poly_filled`, `bezier_cubic`, `bezier_quadratic` — each with points, color, thickness |
+| `imgui_draw` | Draw on named, composable canvas layers. Calls append by default (`mode: replace` resets one layer). Includes lines, rectangles, circles, triangles, text, polygons, Beziers, ellipses, arcs, and four-corner gradients |
 
 ### Style & Theming (7)
 
