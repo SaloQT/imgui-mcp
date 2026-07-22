@@ -1,0 +1,10 @@
+name: imgui-mcp
+version: 1.0.0
+schema: v1
+
+mcpServers:
+  - name: imgui
+    command: python3
+    args:
+      - server.py
+    env: {}

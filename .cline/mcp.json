@@ -3,7 +3,10 @@
     "imgui": {
       "command": "python3",
       "args": ["server.py"],
-      "env": {}
+      "cwd": "${workspaceFolder}",
+      "env": {},
+      "disabled": false,
+      "autoApprove": []
     }
   }
 }
