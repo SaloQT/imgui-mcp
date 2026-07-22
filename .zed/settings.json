@@ -1,0 +1,12 @@
+{
+  "context_servers": {
+    "imgui": {
+      "source": "custom",
+      "command": {
+        "path": "python3",
+        "args": ["server.py"],
+        "env": {}
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "imgui": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${workspaceFolder}/server.py"],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,3 @@
+[mcp_servers.imgui]
+command = "python3"
+args = ["server.py"]
