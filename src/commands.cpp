@@ -682,6 +682,10 @@ static int parse_draw_type(const json& v) {
     if (s == "text") return 11;
     if (s == "bezier_cubic") return 12;
     if (s == "bezier_quadratic") return 13;
+    if (s == "ellipse") return 14;
+    if (s == "ellipse_filled") return 15;
+    if (s == "rect_gradient") return 16;
+    if (s == "arc") return 17;
     return 0;
 }
 
@@ -721,6 +725,18 @@ static DrawCommand parse_draw_command(const json& j) {
         for (int i = 0; i < 4 && i < (int)c.size(); i++)
             dc.color[i] = c[i].get<float>();
     }
+    auto read_color = [&](const char* key, float dst[4]) {
+        if (!j.contains(key) || !j[key].is_array()) return;
+        const json& c = j[key];
+        for (int i = 0; i < 4 && i < (int)c.size(); ++i)
+            dst[i] = c[i].get<float>();
+    };
+    std::copy(std::begin(dc.color), std::end(dc.color), dc.color2);
+    std::copy(std::begin(dc.color), std::end(dc.color), dc.color3);
+    std::copy(std::begin(dc.color), std::end(dc.color), dc.color4);
+    read_color("color2", dc.color2);
+    read_color("color3", dc.color3);
+    read_color("color4", dc.color4);
     if (j.contains("thickness") && j["thickness"].is_number()) dc.thickness = j["thickness"].get<float>();
     if (j.contains("filled") && j["filled"].is_boolean()) dc.filled = j["filled"].get<bool>();
     if (j.contains("num_segments") && j["num_segments"].is_number()) dc.num_segments = j["num_segments"].get<int>();
@@ -1083,6 +1099,9 @@ static json serialize_widget_full(const Widget& w) {
             dj["p3"] = {dc.p3[0], dc.p3[1]};
             dj["p4"] = {dc.p4[0], dc.p4[1]};
             dj["color"] = {dc.color[0], dc.color[1], dc.color[2], dc.color[3]};
+            dj["color2"] = {dc.color2[0], dc.color2[1], dc.color2[2], dc.color2[3]};
+            dj["color3"] = {dc.color3[0], dc.color3[1], dc.color3[2], dc.color3[3]};
+            dj["color4"] = {dc.color4[0], dc.color4[1], dc.color4[2], dc.color4[3]};
             dj["thickness"] = dc.thickness;
             dj["filled"] = dc.filled;
             dj["num_segments"] = dc.num_segments;
@@ -1209,6 +1228,15 @@ static Widget deserialize_widget_full_at_depth(const json& j, size_t depth,
             if (dj.contains("p3")) { dc.p3[0] = dj["p3"][0].get<float>(); dc.p3[1] = dj["p3"][1].get<float>(); }
             if (dj.contains("p4")) { dc.p4[0] = dj["p4"][0].get<float>(); dc.p4[1] = dj["p4"][1].get<float>(); }
             if (dj.contains("color")) { for (int i = 0; i < 4 && i < (int)dj["color"].size(); i++) dc.color[i] = dj["color"][i].get<float>(); }
+            auto restore_color = [&](const char* key, float dst[4]) {
+                std::copy(std::begin(dc.color), std::end(dc.color), dst);
+                if (dj.contains(key))
+                    for (int i = 0; i < 4 && i < (int)dj[key].size(); ++i)
+                        dst[i] = dj[key][i].get<float>();
+            };
+            restore_color("color2", dc.color2);
+            restore_color("color3", dc.color3);
+            restore_color("color4", dc.color4);
             dc.thickness = dj.value("thickness", 1.0f);
             dc.filled = dj.value("filled", false);
             dc.num_segments = dj.value("num_segments", 0);
@@ -2985,17 +3013,26 @@ void process_command(const json& cmd) {
             win.widgets[wid] = nw;
             w = &win.widgets[wid];
         }
-        w->draw_commands.clear();
+        const std::string mode = cmd.value("mode", "append");
+        if (mode != "append" && mode != "replace") {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "draw mode must be 'append' or 'replace'"}});
+            return;
+        }
+        if (mode == "replace") w->draw_commands.clear();
         if (cmd.contains("commands") && cmd["commands"].is_array()) {
-            if (cmd["commands"].size() > MAX_DRAW_COMMANDS)
+            if (cmd["commands"].size() > MAX_DRAW_COMMANDS - w->draw_commands.size())
                 throw std::length_error("draw command count exceeds the limit of 1024");
             for (const auto& c : cmd["commands"])
                 w->draw_commands.push_back(parse_draw_command(c));
         }
         validate_state_limits(candidate_windows, candidate_order);
+        const size_t command_count = w->draw_commands.size();
         g_windows.swap(candidate_windows);
         g_window_order.swap(candidate_order);
-        emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"id", wid}});
+        emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id},
+                   {"id", wid}, {"mode", mode},
+                   {"command_count", command_count}});
 
     } else if (type == "open_popup") {
         std::string win_id = cmd.value("window", "");

@@ -91,12 +91,15 @@ enum class WidgetType {
 // ─── Draw commands (for DrawList widget) ────────────────────────────────────
 
 struct DrawCommand {
-    int    type         = 0;       // 0=Line,1=Rect,2=RectFilled,3=Circle,4=CircleFilled,5=Triangle,6=TriangleFilled,7=Polyline,8=ConvexPolyFilled,9=Quad,10=QuadFilled,11=Text,12=BezierCubic,13=BezierQuadratic
+    int    type         = 0;       // 0..13=legacy primitives, 14=Ellipse,15=EllipseFilled,16=RectGradient,17=Arc
     float  p1[2]       = {0, 0};
     float  p2[2]       = {0, 0};
     float  p3[2]       = {0, 0};
     float  p4[2]       = {0, 0};
     float  color[4]    = {1, 1, 1, 1};
+    float  color2[4]   = {1, 1, 1, 1};
+    float  color3[4]   = {1, 1, 1, 1};
+    float  color4[4]   = {1, 1, 1, 1};
     float  thickness   = 1.0f;
     bool   filled      = false;
     int    num_segments = 0;

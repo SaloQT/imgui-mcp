@@ -882,6 +882,10 @@ void render_widget(const std::string& win_id, Widget& w) {
                     std::clamp(cmd.num_segments, 0, MAX_DRAW_SEGMENTS);
                 ImU32 col = ImGui::ColorConvertFloat4ToU32(
                     ImVec4(cmd.color[0], cmd.color[1], cmd.color[2], cmd.color[3]));
+                auto packed_color = [](const float color[4]) {
+                    return ImGui::ColorConvertFloat4ToU32(
+                        ImVec4(color[0], color[1], color[2], color[3]));
+                };
                 ImVec2 p1(cmd.p1[0], cmd.p1[1]);
                 ImVec2 p2(cmd.p2[0], cmd.p2[1]);
                 ImVec2 p3(cmd.p3[0], cmd.p3[1]);
@@ -941,6 +945,22 @@ void render_widget(const std::string& win_id, Widget& w) {
                 case 13: // BezierQuadratic
                     dl->AddBezierQuadratic(p1, p2, p3, col, cmd.thickness,
                                            segment_count);
+                    break;
+                case 14: // Ellipse
+                    dl->AddEllipse(p1, p2, col, cmd.p3[0], segment_count,
+                                   cmd.thickness);
+                    break;
+                case 15: // EllipseFilled
+                    dl->AddEllipseFilled(p1, p2, col, cmd.p3[0], segment_count);
+                    break;
+                case 16: // RectGradient (TL, TR, BR, BL)
+                    dl->AddRectFilledMultiColor(
+                        p1, p2, col, packed_color(cmd.color2),
+                        packed_color(cmd.color3), packed_color(cmd.color4));
+                    break;
+                case 17: // Arc: p1=center, p2.x=radius, p2.y=start, p3.x=end
+                    dl->PathArcTo(p1, p2.x, p2.y, p3.x, segment_count);
+                    dl->PathStroke(col, 0, cmd.thickness);
                     break;
                 default:
                     break;
