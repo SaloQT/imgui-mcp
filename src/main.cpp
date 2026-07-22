@@ -107,6 +107,7 @@ int                                 g_max_undo = 50;
 
 // Texture / Asset system
 std::map<std::string, LoadedTexture> g_textures;
+std::map<std::string, LoadedFont> g_fonts;
 std::string                          g_theme_preset = "dark";
 
 // Safe area insets (top, bottom, left, right)
@@ -556,6 +557,17 @@ int main(int argc, char** argv) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+#ifdef _WIN32
+    // Match the native Windows UI surface instead of falling back to ImGui's
+    // intentionally tiny embedded bitmap font. ImGui 1.92 loads glyphs
+    // dynamically, so this also covers the symbols used by game-tool UIs.
+    if (ImFont* windows_font =
+            io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f)) {
+        io.FontDefault = windows_font;
+        g_fonts.emplace("windows-ui", LoadedFont{
+            "windows-ui", "C:\\Windows\\Fonts\\segoeui.ttf", 16.0f, windows_font});
+    }
+#endif
 
     // Style
     ImGui::StyleColorsDark();

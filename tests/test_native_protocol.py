@@ -126,6 +126,30 @@ class NativeProtocolTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.app.cleanup()
 
+    def test_font_registry_defaults_and_rejects_missing_files(self) -> None:
+        self.app.send({"cmd": "list_fonts"})
+        fonts = self.app.read_json()
+        self.assertEqual("fonts", fonts.get("type"), fonts)
+        self.assertEqual("default", fonts["fonts"][0]["id"])
+        self.assertTrue(fonts["fonts"][0]["active"])
+
+        self.app.send({"cmd": "set_font", "id": "default"})
+        response = self.app.read_json()
+        self.assertEqual("ack", response.get("type"), response)
+        self.assertEqual("default", response.get("id"), response)
+
+        self.app.send(
+            {
+                "cmd": "load_font",
+                "id": "missing",
+                "path": "/definitely/missing/font.ttf",
+                "size_pixels": 16,
+            }
+        )
+        response = self.app.read_json()
+        self.assertEqual("error", response.get("type"), response)
+        self.assertIn("does not exist", response.get("message", ""))
+
     def test_drains_queued_commands_before_stdin_eof(self) -> None:
         self.app.send({"cmd": "create_window", "id": "batch", "title": "Batch"})
         self.app.send({"cmd": "get_state"})

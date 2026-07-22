@@ -101,7 +101,8 @@ jobs:
             ```
 
             ### What's included
-            - 70+ MCP tools, 102 widget types
+            - 74 MCP tools, 102 widget types
+            - Runtime TTF/OTF font loading and switching
             - Visual feedback (screenshots)
             - Input simulation, animation, theming
             - Game UI patterns (health bars, inventory, dialogue, minimaps)

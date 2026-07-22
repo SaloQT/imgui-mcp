@@ -7,14 +7,14 @@
     <a href="https://github.com/SaloQT/imgui-mcp/releases"><img src="https://img.shields.io/github/v/release/SaloQT/imgui-mcp?style=flat&colorA=222222&colorB=58A6FF" alt="Release"></a>
     <a href="https://github.com/ocornut/imgui/releases/tag/v1.92.8"><img src="https://img.shields.io/badge/Dear_ImGui-v1.92.8-ff69b4?style=flat&colorA=222222" alt="ImGui"></a>
     <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-2025--06--18-orange?style=flat&colorA=222222" alt="MCP"></a>
-    <img src="https://img.shields.io/badge/70+_tools-8A2BE2?style=flat&colorA=222222" alt="Tools">
+    <img src="https://img.shields.io/badge/74_tools-8A2BE2?style=flat&colorA=222222" alt="Tools">
     <img src="https://img.shields.io/badge/102_widgets-DC143C?style=flat&colorA=222222" alt="Widgets">
     <img src="https://img.shields.io/badge/13_IDE%2FCLI_tools-3FB950?style=flat&colorA=222222" alt="Supported Tools">
     <a href="https://github.com/SaloQT/imgui-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat&colorA=222222" alt="License"></a>
   </p>
   <p align="center">
     <a href="#quick-start">Quick Start</a> ·
-    <a href="#all-71-mcp-tools">All Tools</a> ·
+    <a href="#all-74-mcp-tools">All Tools</a> ·
     <a href="#all-102-widget-types">All Widgets</a> ·
     <a href="#game-ui-patterns">Game Patterns</a> ·
     <a href="#supported-idecli-tools">Supported Tools</a> ·
@@ -30,7 +30,7 @@ AI coding agents can generate UI code — but they **can't see the result**. The
 
 ## The Solution
 
-**imgui-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives any AI agent a live, interactive [Dear ImGui](https://github.com/ocornut/imgui) canvas with **70+ tools**, **102 widget types**, and a **visual feedback loop**:
+**imgui-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives any AI agent a live, interactive [Dear ImGui](https://github.com/ocornut/imgui) canvas with **74 tools**, **102 widget types**, and a **visual feedback loop**:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -39,7 +39,7 @@ AI coding agents can generate UI code — but they **can't see the result**. The
                                 ▼
 ┌─────────────┐    MCP     ┌──────────┐   JSON    ┌─────────────┐
 │  AI Agent   │◄──────────►│ server.py │◄────────►│  Live ImGui  │
-│  (any LLM)  │  71 tools  │ 0 deps   │  stdin/  │  SDL2+GL     │
+│  (any LLM)  │  74 tools  │ 0 deps   │  stdin/  │  SDL2+GL     │
 └─────────────┘            └──────────┘  stdout   └──────┬───────┘
        ▲                                                 │
        │              screenshot (BMP)                   │
@@ -107,7 +107,7 @@ uv run python demo.py   # runs a full feature demonstration
 
 ---
 
-## All 71 MCP Tools
+## All 74 MCP Tools
 
 ### Windows & Widgets (7)
 
@@ -192,12 +192,29 @@ uv run python demo.py   # runs a full feature demonstration
 | `imgui_set_dpi_scale` | Scale all UI sizes for HiDPI displays (1.0, 1.5, 2.0) |
 | `imgui_set_safe_area` | Set safe area insets (top, bottom, left, right) that anchored windows respect |
 
-### Assets & Textures (2)
+### Assets, Textures & Fonts (5)
 
 | Tool | Description |
 |------|-------------|
 | `imgui_load_texture` | Load a BMP/PPM image as a GPU texture for Image/ImageButton widgets. Creates a checkerboard placeholder if file not found. |
 | `imgui_unload_texture` | Free a loaded texture's GPU resources |
+| `imgui_load_font` | Load a TTF/OTF font from a native-app-visible path under a stable ID and pixel size. |
+| `imgui_set_font` | Switch the global ImGui font by ID, or restore the embedded `default`. |
+| `imgui_list_fonts` | List loaded font IDs, paths, sizes, and the active font. |
+
+Font paths are opened by the native renderer, so use a path visible to that
+process. For example, a Windows renderer launched from WSL accepts a Windows
+path:
+
+```text
+imgui_load_font(id="ui", path="C:\\Windows\\Fonts\\segoeui.ttf", size_pixels=18)
+imgui_set_font(id="ui")
+imgui_list_fonts()
+imgui_set_font(id="default")
+```
+
+Fonts remain loaded for the renderer process lifetime. IDs are unique; choose a
+new ID when comparing another face or size.
 
 ### Workflow — Undo/Redo & Snapshots (6)
 
@@ -376,7 +393,7 @@ imgui_screenshot()
 
 ```
 imgui-mcp/
-├── server.py              Official Python SDK server — 71 tools
+├── server.py              Official Python SDK server — 74 tools
 ├── pyproject.toml         Python package and MCP SDK dependency
 ├── uv.lock                Reproducible Python dependency lock
 ├── src/

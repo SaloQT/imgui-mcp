@@ -64,6 +64,13 @@ class ImGuiAppTests(unittest.TestCase):
             with mock.patch.object(server, "SCRIPT_DIR", Path(temp_dir)):
                 self.assertEqual(expected, server._find_binary())
 
+    def test_binary_override_is_honored(self) -> None:
+        expected = Path("/tmp/imgui-mcp-windows.exe")
+        with mock.patch.dict(
+            server.os.environ, {"IMGUI_MCP_APP_BINARY": str(expected)}
+        ):
+            self.assertEqual(expected, server._find_binary())
+
     def test_screenshot_waits_for_terminal_completion(self) -> None:
         ack = {"type": "ack", "cmd": "screenshot"}
         screenshot = {"type": "screenshot", "cmd": "screenshot", "path": "shot.bmp"}
@@ -224,7 +231,7 @@ class ImGuiAppTests(unittest.TestCase):
 class MCPServerTests(unittest.TestCase):
     def test_tool_catalog_is_unique_and_complete(self) -> None:
         names = [tool["name"] for tool in server.TOOLS]
-        self.assertEqual(71, len(names))
+        self.assertEqual(74, len(names))
         self.assertEqual(len(names), len(set(names)))
 
     def test_widget_color_schema_accepts_rgb_and_rgba(self) -> None:
@@ -430,6 +437,31 @@ class MCPServerTests(unittest.TestCase):
             mcp.app.send_command.call_args.args[0],
         )
 
+        mcp._call_tool(
+            "imgui_load_font",
+            {"id": "ui", "path": "/fonts/ui.ttf", "size_pixels": 18},
+        )
+        self.assertEqual(
+            {
+                "cmd": "load_font",
+                "id": "ui",
+                "path": "/fonts/ui.ttf",
+                "size_pixels": 18,
+            },
+            mcp.app.send_command.call_args.args[0],
+        )
+
+        mcp._call_tool("imgui_set_font", {"id": "ui"})
+        self.assertEqual(
+            {"cmd": "set_font", "id": "ui"},
+            mcp.app.send_command.call_args.args[0],
+        )
+
+        mcp._call_tool("imgui_list_fonts", {})
+        self.assertEqual(
+            {"cmd": "list_fonts"}, mcp.app.send_command.call_args.args[0]
+        )
+
 
 class OfficialSDKIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_stdio_handshake_lists_tools_and_calls_status(self) -> None:
@@ -445,7 +477,7 @@ class OfficialSDKIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 status = await session.call_tool("imgui_app_status", {})
 
         self.assertEqual("imgui-mcp", initialized.serverInfo.name)
-        self.assertEqual(71, len(tools.tools))
+        self.assertEqual(74, len(tools.tools))
         self.assertEqual("imgui_create_window", tools.tools[0].name)
         self.assertFalse(status.isError)
         self.assertEqual(server.SERVER_VERSION, status.structuredContent["version"])

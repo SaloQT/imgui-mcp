@@ -75,6 +75,10 @@ def _find_binary() -> Path:
     Handles: release packages (bin/), source builds (build/),
     MSVC builds (build/Release/), cross-compiles (build-win/),
     and Windows .exe extension."""
+    override = os.environ.get("IMGUI_MCP_APP_BINARY")
+    if override:
+        return Path(override).expanduser().resolve()
+
     candidates = [
         SCRIPT_DIR / "bin" / f"imgui_mcp_app{_EXE}",           # release package
         SCRIPT_DIR / "build" / f"imgui_mcp_app{_EXE}",         # cmake source build
@@ -1923,6 +1927,44 @@ TOOLS = [
         },
     },
     {
+        "name": "imgui_load_font",
+        "description": (
+            "Load a TTF or OTF font into the live ImGui atlas under a stable ID. "
+            "Use imgui_set_font to make it the global default."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Unique font identifier"},
+                "path": {"type": "string", "description": "Native-app-visible TTF or OTF path"},
+                "size_pixels": {
+                    "type": "number", "minimum": 8, "maximum": 96,
+                    "description": "Font size in pixels (default 16)",
+                },
+            },
+            "required": ["id", "path"],
+        },
+    },
+    {
+        "name": "imgui_set_font",
+        "description": (
+            "Set the global default font by loaded ID. Use 'default' to restore "
+            "Dear ImGui's embedded font."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Loaded font ID or 'default'"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "imgui_list_fonts",
+        "description": "List loaded fonts, their native paths and sizes, and which font is active.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "imgui_set_theme",
         "description": (
             "Apply a theme preset to the ImGui interface. Available themes: "
@@ -2596,6 +2638,22 @@ class MCPServer:
         elif name == "imgui_unload_texture":
             cmd = {"cmd": "unload_texture", "id": args.get("id", "")}
             return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_load_font":
+            cmd = {
+                "cmd": "load_font",
+                "id": args.get("id", ""),
+                "path": args.get("path", ""),
+                "size_pixels": args.get("size_pixels", 16),
+            }
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_set_font":
+            cmd = {"cmd": "set_font", "id": args.get("id", "default")}
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_list_fonts":
+            return self.app.send_command({"cmd": "list_fonts"}) or {"error": "no response"}
 
         elif name == "imgui_set_theme":
             cmd = {"cmd": "set_theme", "theme": args.get("theme", "dark")}

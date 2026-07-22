@@ -323,6 +323,15 @@ struct LoadedTexture {
 extern std::map<std::string, LoadedTexture> g_textures;
 extern std::string g_theme_preset; // current theme name
 
+struct LoadedFont {
+    std::string id;
+    std::string path;
+    float size_pixels = 0.0f;
+    ImFont* font = nullptr;
+};
+
+extern std::map<std::string, LoadedFont> g_fonts;
+
 // Safe area insets (top, bottom, left, right) in pixels
 extern float g_safe_area[4];
 
