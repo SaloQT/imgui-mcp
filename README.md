@@ -30,7 +30,7 @@ AI coding agents can generate UI code — but they **can't see the result**. The
 
 ## The Solution
 
-**imgui-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives any AI agent a live, interactive [Dear ImGui](https://github.com/ocornut/imgui) canvas with **74 tools**, **102 widget types**, and a **visual feedback loop**:
+**imgui-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives any AI agent a live, interactive [Dear ImGui](https://github.com/ocornut/imgui) canvas with **84 tools**, **102 widget types**, and a **visual feedback loop**:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -39,7 +39,7 @@ AI coding agents can generate UI code — but they **can't see the result**. The
                                 ▼
 ┌─────────────┐    MCP     ┌──────────┐   JSON    ┌─────────────┐
 │  AI Agent   │◄──────────►│ server.py │◄────────►│  Live ImGui  │
-│  (any LLM)  │  74 tools  │ 0 deps   │  stdin/  │  SDL2+GL     │
+│  (any LLM)  │  84 tools  │ 0 deps   │  stdin/  │  SDL2+GL     │
 └─────────────┘            └──────────┘  stdout   └──────┬───────┘
        ▲                                                 │
        │              screenshot (BMP)                   │
@@ -160,6 +160,21 @@ uv run python demo.py   # runs a full feature demonstration
 | Tool | Description |
 |------|-------------|
 | `imgui_draw` | Draw on named, composable canvas layers. Calls append by default (`mode: replace` resets one layer). Includes lines, rectangles, circles, triangles, text, polygons, Beziers, ellipses, arcs, and four-corner gradients |
+
+### Interactive Canvas (10)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_add_hit_region` | Add an invisible interactive shape (rect, circle, ellipse, polygon) that detects hover, click, drag, double-click, and wheel events. Supports transforms (position, rotation, scale). |
+| `imgui_remove_hit_region` | Remove a hit region by id |
+| `imgui_update_hit_region` | Update a hit region's shape, transform, or interaction flags |
+| `imgui_get_canvas_events` | Drain canvas interaction events (hover, click, drag start/move/end, wheel, double-click) with positions and deltas |
+| `imgui_update_draw_command` | Update a single draw command in a layer by index — change color, position, thickness without replacing the layer |
+| `imgui_transform_draw_layer` | Apply translate, rotate, scale, or opacity to an entire draw layer |
+| `imgui_bind` | Bind a widget value to a visual property (e.g. slider → draw layer opacity). Updates every frame automatically. |
+| `imgui_unbind` | Remove bindings by source widget and/or target |
+| `imgui_set_callback` | Declarative action: button click toggles visibility, switches scenes, or sets values — no polling round-trip |
+| `imgui_remove_callback` | Remove declarative callbacks |
 
 ### Style & Theming (7)
 
@@ -402,7 +417,7 @@ imgui_screenshot()
 
 ```
 imgui-mcp/
-├── server.py              Official Python SDK server — 74 tools
+├── server.py              Official Python SDK server — 84 tools
 ├── pyproject.toml         Python package and MCP SDK dependency
 ├── uv.lock                Reproducible Python dependency lock
 ├── src/

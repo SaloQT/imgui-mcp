@@ -2061,6 +2061,326 @@ TOOLS = [
             "required": ["var_name", "value"],
         },
     },
+    # ── Interactive Canvas: Hit Regions ────────────────────────────────────
+    {
+        "name": "imgui_add_hit_region",
+        "description": (
+            "Add an interactive hit region to a window. Hit regions are invisible "
+            "shapes that detect mouse hover, click, drag, double-click, and wheel "
+            "events. Use with imgui_get_canvas_events to read interactions. "
+            "Shapes: rect, circle, ellipse, polygon."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window": {"type": "string", "description": "Target window id"},
+                "id": {"type": "string", "description": "Unique hit region identifier"},
+                "shape": {
+                    "type": "string",
+                    "enum": ["rect", "circle", "ellipse", "polygon"],
+                    "description": "Hit region shape type",
+                },
+                "p1": {
+                    "type": "array", "minItems": 2, "maxItems": 2,
+                    "items": {"type": "number"},
+                    "description": "Rect: min corner [x,y]. Circle/Ellipse: center [x,y]",
+                },
+                "p2": {
+                    "type": "array", "minItems": 2, "maxItems": 2,
+                    "items": {"type": "number"},
+                    "description": "Rect: max corner [x,y]. Circle: [radius, 0]. Ellipse: [rx, ry]",
+                },
+                "points": {
+                    "type": "array",
+                    "items": {
+                        "type": "array", "minItems": 2, "maxItems": 2,
+                        "items": {"type": "number"},
+                    },
+                    "description": "Polygon vertices as [[x,y], ...] (for polygon shape)",
+                },
+                "interactions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["hover", "click", "drag", "double_click", "wheel"],
+                    },
+                    "description": "Enabled interaction types (default: hover + click)",
+                },
+                "transform": {
+                    "type": "object",
+                    "properties": {
+                        "position": {
+                            "type": "array", "minItems": 2, "maxItems": 2,
+                            "items": {"type": "number"},
+                            "description": "Translation offset [x, y]",
+                        },
+                        "rotation": {"type": "number", "description": "Rotation in radians"},
+                        "scale": {
+                            "type": "array", "minItems": 2, "maxItems": 2,
+                            "items": {"type": "number"},
+                            "description": "Scale factors [sx, sy]",
+                        },
+                    },
+                    "description": "Transform applied to the hit region shape",
+                },
+                "draw_layer": {
+                    "type": "string",
+                    "description": "Optional associated draw layer widget id",
+                },
+            },
+            "required": ["window", "id", "shape"],
+        },
+    },
+    {
+        "name": "imgui_remove_hit_region",
+        "description": "Remove a hit region by its id",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Hit region id to remove"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "imgui_update_hit_region",
+        "description": (
+            "Update a hit region's shape, transform, or interaction flags. "
+            "Only provided fields are updated."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Hit region id to update"},
+                "p1": {
+                    "type": "array", "minItems": 2, "maxItems": 2,
+                    "items": {"type": "number"},
+                },
+                "p2": {
+                    "type": "array", "minItems": 2, "maxItems": 2,
+                    "items": {"type": "number"},
+                },
+                "points": {
+                    "type": "array",
+                    "items": {
+                        "type": "array", "minItems": 2, "maxItems": 2,
+                        "items": {"type": "number"},
+                    },
+                },
+                "interactions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["hover", "click", "drag", "double_click", "wheel"],
+                    },
+                },
+                "transform": {
+                    "type": "object",
+                    "properties": {
+                        "position": {
+                            "type": "array", "minItems": 2, "maxItems": 2,
+                            "items": {"type": "number"},
+                        },
+                        "rotation": {"type": "number"},
+                        "scale": {
+                            "type": "array", "minItems": 2, "maxItems": 2,
+                            "items": {"type": "number"},
+                        },
+                    },
+                },
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "imgui_get_canvas_events",
+        "description": (
+            "Drain canvas interaction events from hit regions. Returns hover, click, "
+            "drag (start/move/end), wheel, and double-click events with positions "
+            "and deltas. Events are consumed on read."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "max_events": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_DRAIN_EVENTS,
+                    "description": "Maximum events to return (default 100)",
+                },
+            },
+        },
+    },
+    # ── Interactive Canvas: Draw Layer Transforms ──────────────────────────
+    {
+        "name": "imgui_update_draw_command",
+        "description": (
+            "Update a single draw command in a named draw layer without replacing "
+            "the entire layer. Specify the command index and the fields to change."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window": {"type": "string", "description": "Target window id"},
+                "layer": {
+                    "type": "string",
+                    "description": "Draw layer widget id (default: draw_list)",
+                    "default": "draw_list",
+                },
+                "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Index of the draw command to update",
+                },
+                "fields": {
+                    "type": "object",
+                    "properties": {
+                        "p1": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+                        "p2": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+                        "p3": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+                        "p4": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+                        "color": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+                        "thickness": {"type": "number"},
+                        "filled": {"type": "boolean"},
+                        "num_segments": {"type": "integer"},
+                        "text": {"type": "string"},
+                    },
+                    "description": "Fields to update on the draw command",
+                },
+            },
+            "required": ["window", "index", "fields"],
+        },
+    },
+    {
+        "name": "imgui_transform_draw_layer",
+        "description": (
+            "Apply a transform to an entire draw layer: translate, rotate, scale, "
+            "or set opacity. Transforms persist until changed and apply to all "
+            "draw commands in the layer."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window": {"type": "string", "description": "Target window id"},
+                "layer": {
+                    "type": "string",
+                    "description": "Draw layer widget id (default: draw_list)",
+                    "default": "draw_list",
+                },
+                "translate": {
+                    "type": "array", "minItems": 2, "maxItems": 2,
+                    "items": {"type": "number"},
+                    "description": "Translation offset [x, y] in pixels",
+                },
+                "rotation": {
+                    "type": "number",
+                    "description": "Rotation in radians",
+                },
+                "scale": {
+                    "type": "array", "minItems": 2, "maxItems": 2,
+                    "items": {"type": "number"},
+                    "description": "Scale factors [sx, sy]",
+                },
+                "opacity": {
+                    "type": "number",
+                    "description": "Layer opacity multiplier 0.0-1.0",
+                },
+            },
+            "required": ["window"],
+        },
+    },
+    # ── Interactive Canvas: Bindings ───────────────────────────────────────
+    {
+        "name": "imgui_bind",
+        "description": (
+            "Bind a widget's value to a visual property. Each frame the source "
+            "widget's property is read, scaled, offset, and written to the target. "
+            "Example: bind a slider's value to a draw layer's opacity."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window": {"type": "string", "description": "Window containing the source widget"},
+                "source_widget": {"type": "string", "description": "Source widget id"},
+                "source_property": {
+                    "type": "string",
+                    "enum": ["value", "checked", "int_value", "color_r", "color_g", "color_b", "color_a", "selected"],
+                    "description": "Property to read from the source widget",
+                },
+                "target_type": {
+                    "type": "string",
+                    "enum": ["draw_layer", "hit_region", "widget"],
+                    "description": "Type of target to write to",
+                },
+                "target_id": {"type": "string", "description": "Target draw layer, hit region, or widget id"},
+                "target_property": {
+                    "type": "string",
+                    "description": "Target property: opacity, position_x, position_y, scale_x, scale_y, rotation, value, size_x, size_y",
+                },
+                "scale": {"type": "number", "description": "Multiplier applied to source value (default 1.0)"},
+                "offset": {"type": "number", "description": "Offset added after scaling (default 0.0)"},
+            },
+            "required": ["window", "source_widget", "source_property", "target_type", "target_id", "target_property"],
+        },
+    },
+    {
+        "name": "imgui_unbind",
+        "description": "Remove bindings. Filter by source_widget and/or target_id, or omit both to remove all.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_widget": {"type": "string", "description": "Source widget to unbind (optional)"},
+                "target_id": {"type": "string", "description": "Target id to unbind (optional)"},
+            },
+        },
+    },
+    # ── Interactive Canvas: Declarative Callbacks ──────────────────────────
+    {
+        "name": "imgui_set_callback",
+        "description": (
+            "Set a declarative callback action that fires automatically when a "
+            "widget event occurs. Actions: toggle_visibility, set_visibility, "
+            "set_value, switch_scene. No polling round-trip needed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window": {"type": "string", "description": "Window containing the trigger widget"},
+                "trigger_widget": {"type": "string", "description": "Widget id that triggers the action"},
+                "trigger_event": {
+                    "type": "string",
+                    "enum": ["clicked", "changed", "hovered"],
+                    "description": "Event that fires the action (default: clicked)",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["toggle_visibility", "set_visibility", "set_value", "switch_scene"],
+                    "description": "Action to perform",
+                },
+                "params": {
+                    "type": "object",
+                    "description": (
+                        "Action parameters. toggle_visibility/set_visibility: "
+                        "{\"widget\": \"id\", \"visible\": true}. "
+                        "set_value: {\"widget\": \"id\", \"value\": 0.5}. "
+                        "switch_scene: {\"scene\": \"name\"}."
+                    ),
+                },
+            },
+            "required": ["window", "trigger_widget", "action"],
+        },
+    },
+    {
+        "name": "imgui_remove_callback",
+        "description": "Remove declarative callbacks. Filter by trigger_widget and/or action.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "trigger_widget": {"type": "string", "description": "Trigger widget to remove callbacks for"},
+                "action": {"type": "string", "description": "Action type to remove"},
+            },
+        },
+    },
 ]
 
 
@@ -2707,6 +3027,93 @@ class MCPServer:
 
         elif name == "imgui_set_style_var":
             cmd = {"cmd": "set_style_var", "var_name": args.get("var_name", ""), "value": args.get("value", 0)}
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        # ── Interactive Canvas handlers ────────────────────────────────────
+        elif name == "imgui_add_hit_region":
+            cmd = dict(args)
+            cmd["cmd"] = "add_hit_region"
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_remove_hit_region":
+            cmd = {"cmd": "remove_hit_region", "id": args.get("id", "")}
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_update_hit_region":
+            cmd = dict(args)
+            cmd["cmd"] = "update_hit_region"
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_get_canvas_events":
+            max_events = args.get("max_events", 100)
+            if (not isinstance(max_events, int) or isinstance(max_events, bool) or
+                    max_events < 1 or max_events > MAX_DRAIN_EVENTS):
+                raise ValueError(
+                    f"max_events must be an integer between 1 and {MAX_DRAIN_EVENTS}"
+                )
+            return self.app.send_command({"cmd": "get_canvas_events", "max_events": max_events}) or {"error": "no response"}
+
+        elif name == "imgui_update_draw_command":
+            cmd = {
+                "cmd": "update_draw_command",
+                "window": args.get("window", ""),
+                "layer": args.get("layer", "draw_list"),
+                "index": args.get("index", 0),
+                "fields": args.get("fields", {}),
+            }
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_transform_draw_layer":
+            cmd = {
+                "cmd": "transform_draw_layer",
+                "window": args.get("window", ""),
+                "layer": args.get("layer", "draw_list"),
+            }
+            for k in ("translate", "rotation", "scale", "opacity"):
+                if k in args:
+                    cmd[k] = args[k]
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_bind":
+            cmd = {
+                "cmd": "bind",
+                "window": args.get("window", ""),
+                "source_widget": args.get("source_widget", ""),
+                "source_property": args.get("source_property", "value"),
+                "target_type": args.get("target_type", "draw_layer"),
+                "target_id": args.get("target_id", ""),
+                "target_property": args.get("target_property", "opacity"),
+                "scale": args.get("scale", 1.0),
+                "offset": args.get("offset", 0.0),
+            }
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_unbind":
+            cmd = {"cmd": "unbind"}
+            if "source_widget" in args:
+                cmd["source_widget"] = args["source_widget"]
+            if "target_id" in args:
+                cmd["target_id"] = args["target_id"]
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_set_callback":
+            cmd = {
+                "cmd": "set_callback",
+                "window": args.get("window", ""),
+                "trigger_widget": args.get("trigger_widget", ""),
+                "trigger_event": args.get("trigger_event", "clicked"),
+                "action": args.get("action", ""),
+            }
+            if "params" in args:
+                cmd["params"] = args["params"]
+            return self.app.send_command(cmd) or {"error": "no response"}
+
+        elif name == "imgui_remove_callback":
+            cmd = {"cmd": "remove_callback"}
+            if "trigger_widget" in args:
+                cmd["trigger_widget"] = args["trigger_widget"]
+            if "action" in args:
+                cmd["action"] = args["action"]
             return self.app.send_command(cmd) or {"error": "no response"}
 
         else:

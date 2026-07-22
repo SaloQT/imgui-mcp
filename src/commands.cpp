@@ -4386,6 +4386,289 @@ void process_command(const json& cmd) {
             emit_json({{"type","error"},{"cmd",type},{"message","invalid var_name or missing value"}});
         }
 
+    // ─── Interactive Canvas Commands ────────────────────────────────────────
+
+    } else if (type == "add_hit_region") {
+        std::string win_id = cmd.value("window", "");
+        std::string region_id = cmd.value("id", "");
+        if (region_id.empty()) {
+            emit_json({{"type", "error"}, {"cmd", type}, {"message", "hit region id is required"}});
+            return;
+        }
+        HitRegion region;
+        region.id = region_id;
+        region.window_id = win_id;
+        region.draw_layer = cmd.value("draw_layer", "");
+
+        std::string shape_str = cmd.value("shape", "rect");
+        if (shape_str == "rect") region.shape = HitShape::Rect;
+        else if (shape_str == "circle") region.shape = HitShape::Circle;
+        else if (shape_str == "ellipse") region.shape = HitShape::Ellipse;
+        else if (shape_str == "polygon") region.shape = HitShape::Polygon;
+        else throw std::invalid_argument("unknown hit shape: " + shape_str);
+
+        if (cmd.contains("p1") && cmd["p1"].is_array() && cmd["p1"].size() >= 2) {
+            region.p1[0] = cmd["p1"][0].get<float>();
+            region.p1[1] = cmd["p1"][1].get<float>();
+        }
+        if (cmd.contains("p2") && cmd["p2"].is_array() && cmd["p2"].size() >= 2) {
+            region.p2[0] = cmd["p2"][0].get<float>();
+            region.p2[1] = cmd["p2"][1].get<float>();
+        }
+        if (cmd.contains("points") && cmd["points"].is_array()) {
+            for (const auto& pt : cmd["points"]) {
+                if (pt.is_array() && pt.size() >= 2) {
+                    region.polygon_points.push_back(pt[0].get<float>());
+                    region.polygon_points.push_back(pt[1].get<float>());
+                }
+            }
+        }
+        if (cmd.contains("interactions") && cmd["interactions"].is_array()) {
+            region.hover_enabled = false;
+            region.click_enabled = false;
+            region.drag_enabled = false;
+            region.double_click_enabled = false;
+            region.wheel_enabled = false;
+            for (const auto& interaction : cmd["interactions"]) {
+                std::string s = interaction.get<std::string>();
+                if (s == "hover") region.hover_enabled = true;
+                else if (s == "click") region.click_enabled = true;
+                else if (s == "drag") region.drag_enabled = true;
+                else if (s == "double_click") region.double_click_enabled = true;
+                else if (s == "wheel") region.wheel_enabled = true;
+            }
+        }
+        if (cmd.contains("transform") && cmd["transform"].is_object()) {
+            const auto& t = cmd["transform"];
+            if (t.contains("position") && t["position"].is_array() && t["position"].size() >= 2) {
+                region.position[0] = t["position"][0].get<float>();
+                region.position[1] = t["position"][1].get<float>();
+            }
+            region.rotation = t.value("rotation", 0.0f);
+            if (t.contains("scale") && t["scale"].is_array() && t["scale"].size() >= 2) {
+                region.scale[0] = t["scale"][0].get<float>();
+                region.scale[1] = t["scale"][1].get<float>();
+            }
+        }
+
+        std::lock_guard<std::mutex> lock(g_hit_regions_mutex);
+        g_hit_regions[region_id] = std::move(region);
+        emit_json({{"type", "ack"}, {"cmd", type}, {"id", region_id}, {"window", win_id}});
+
+    } else if (type == "remove_hit_region") {
+        std::string region_id = cmd.value("id", "");
+        std::lock_guard<std::mutex> lock(g_hit_regions_mutex);
+        g_hit_regions.erase(region_id);
+        emit_json({{"type", "ack"}, {"cmd", type}, {"id", region_id}});
+
+    } else if (type == "update_hit_region") {
+        std::string region_id = cmd.value("id", "");
+        std::lock_guard<std::mutex> lock(g_hit_regions_mutex);
+        auto it = g_hit_regions.find(region_id);
+        if (it == g_hit_regions.end()) {
+            emit_json({{"type", "error"}, {"cmd", type}, {"message", "hit region not found: " + region_id}});
+            return;
+        }
+        auto& region = it->second;
+        if (cmd.contains("p1") && cmd["p1"].is_array() && cmd["p1"].size() >= 2) {
+            region.p1[0] = cmd["p1"][0].get<float>();
+            region.p1[1] = cmd["p1"][1].get<float>();
+        }
+        if (cmd.contains("p2") && cmd["p2"].is_array() && cmd["p2"].size() >= 2) {
+            region.p2[0] = cmd["p2"][0].get<float>();
+            region.p2[1] = cmd["p2"][1].get<float>();
+        }
+        if (cmd.contains("points") && cmd["points"].is_array()) {
+            region.polygon_points.clear();
+            for (const auto& pt : cmd["points"]) {
+                if (pt.is_array() && pt.size() >= 2) {
+                    region.polygon_points.push_back(pt[0].get<float>());
+                    region.polygon_points.push_back(pt[1].get<float>());
+                }
+            }
+        }
+        if (cmd.contains("transform") && cmd["transform"].is_object()) {
+            const auto& t = cmd["transform"];
+            if (t.contains("position") && t["position"].is_array() && t["position"].size() >= 2) {
+                region.position[0] = t["position"][0].get<float>();
+                region.position[1] = t["position"][1].get<float>();
+            }
+            if (t.contains("rotation")) region.rotation = t["rotation"].get<float>();
+            if (t.contains("scale") && t["scale"].is_array() && t["scale"].size() >= 2) {
+                region.scale[0] = t["scale"][0].get<float>();
+                region.scale[1] = t["scale"][1].get<float>();
+            }
+        }
+        if (cmd.contains("interactions") && cmd["interactions"].is_array()) {
+            region.hover_enabled = false;
+            region.click_enabled = false;
+            region.drag_enabled = false;
+            region.double_click_enabled = false;
+            region.wheel_enabled = false;
+            for (const auto& interaction : cmd["interactions"]) {
+                std::string s = interaction.get<std::string>();
+                if (s == "hover") region.hover_enabled = true;
+                else if (s == "click") region.click_enabled = true;
+                else if (s == "drag") region.drag_enabled = true;
+                else if (s == "double_click") region.double_click_enabled = true;
+                else if (s == "wheel") region.wheel_enabled = true;
+            }
+        }
+        emit_json({{"type", "ack"}, {"cmd", type}, {"id", region_id}});
+
+    } else if (type == "get_canvas_events") {
+        int max_events = cmd.value("max_events", 100);
+        if (max_events < 1) max_events = 1;
+        if (max_events > 256) max_events = 256;
+        std::lock_guard<std::mutex> lock(g_canvas_events_mutex);
+        json result;
+        result["type"] = "canvas_events";
+        result["events"] = json::array();
+        int count = 0;
+        auto it = g_canvas_events.begin();
+        while (it != g_canvas_events.end() && count < max_events) {
+            result["events"].push_back(*it);
+            it = g_canvas_events.erase(it);
+            count++;
+        }
+        result["remaining"] = (int)g_canvas_events.size();
+        emit_json(result);
+
+    } else if (type == "update_draw_command") {
+        std::string win_id = cmd.value("window", "");
+        std::string layer_id = cmd.value("layer", "draw_list");
+        int index = cmd.value("index", -1);
+        if (index < 0) {
+            emit_json({{"type", "error"}, {"cmd", type}, {"message", "index is required and must be >= 0"}});
+            return;
+        }
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto wit = g_windows.find(win_id);
+        if (wit == g_windows.end()) {
+            emit_json({{"type", "error"}, {"cmd", type}, {"message", "window not found: " + win_id}});
+            return;
+        }
+        Widget* layer = find_widget_in_window(wit->second, layer_id);
+        if (!layer || layer->type != WidgetType::DrawList) {
+            emit_json({{"type", "error"}, {"cmd", type}, {"message", "draw layer not found: " + layer_id}});
+            return;
+        }
+        if (static_cast<size_t>(index) >= layer->draw_commands.size()) {
+            emit_json({{"type", "error"}, {"cmd", type}, {"message", "draw command index out of range"}});
+            return;
+        }
+        auto& dc = layer->draw_commands[static_cast<size_t>(index)];
+        if (cmd.contains("fields") && cmd["fields"].is_object()) {
+            const auto& f = cmd["fields"];
+            if (f.contains("p1") && f["p1"].is_array() && f["p1"].size() >= 2) {
+                dc.p1[0] = f["p1"][0].get<float>();
+                dc.p1[1] = f["p1"][1].get<float>();
+            }
+            if (f.contains("p2") && f["p2"].is_array() && f["p2"].size() >= 2) {
+                dc.p2[0] = f["p2"][0].get<float>();
+                dc.p2[1] = f["p2"][1].get<float>();
+            }
+            if (f.contains("p3") && f["p3"].is_array() && f["p3"].size() >= 2) {
+                dc.p3[0] = f["p3"][0].get<float>();
+                dc.p3[1] = f["p3"][1].get<float>();
+            }
+            if (f.contains("p4") && f["p4"].is_array() && f["p4"].size() >= 2) {
+                dc.p4[0] = f["p4"][0].get<float>();
+                dc.p4[1] = f["p4"][1].get<float>();
+            }
+            if (f.contains("color") && f["color"].is_array() && f["color"].size() >= 4) {
+                for (int i = 0; i < 4; i++) dc.color[i] = f["color"][i].get<float>();
+            }
+            if (f.contains("thickness")) dc.thickness = f["thickness"].get<float>();
+            if (f.contains("filled")) dc.filled = f["filled"].get<bool>();
+            if (f.contains("num_segments")) dc.num_segments = f["num_segments"].get<int>();
+            if (f.contains("text")) dc.text = f["text"].get<std::string>();
+        }
+        emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"layer", layer_id}, {"index", index}});
+
+    } else if (type == "transform_draw_layer") {
+        std::string win_id = cmd.value("window", "");
+        std::string layer_id = cmd.value("layer", "draw_list");
+        std::string key = win_id + "/" + layer_id;
+        auto& t = g_draw_layer_transforms[key];
+        if (cmd.contains("translate") && cmd["translate"].is_array() && cmd["translate"].size() >= 2) {
+            t.translate[0] = cmd["translate"][0].get<float>();
+            t.translate[1] = cmd["translate"][1].get<float>();
+        }
+        if (cmd.contains("rotation")) t.rotation = cmd["rotation"].get<float>();
+        if (cmd.contains("scale") && cmd["scale"].is_array() && cmd["scale"].size() >= 2) {
+            t.scale[0] = cmd["scale"][0].get<float>();
+            t.scale[1] = cmd["scale"][1].get<float>();
+        }
+        if (cmd.contains("opacity")) t.opacity = cmd["opacity"].get<float>();
+        emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"layer", layer_id}});
+
+    } else if (type == "bind") {
+        Binding binding;
+        binding.window_id = cmd.value("window", "");
+        binding.source_widget = cmd.value("source_widget", "");
+        binding.source_property = cmd.value("source_property", "value");
+        binding.target_type = cmd.value("target_type", "draw_layer");
+        binding.target_id = cmd.value("target_id", "");
+        binding.target_property = cmd.value("target_property", "opacity");
+        binding.bind_scale = cmd.value("scale", 1.0f);
+        binding.bind_offset = cmd.value("offset", 0.0f);
+        binding.id = binding.source_widget + "->" + binding.target_id + "." + binding.target_property;
+
+        // Remove existing binding with same id
+        g_bindings.erase(
+            std::remove_if(g_bindings.begin(), g_bindings.end(),
+                [&](const Binding& b) { return b.id == binding.id; }),
+            g_bindings.end());
+        g_bindings.push_back(std::move(binding));
+        emit_json({{"type", "ack"}, {"cmd", type},
+                   {"source", cmd.value("source_widget", "")},
+                   {"target", cmd.value("target_id", "")}});
+
+    } else if (type == "unbind") {
+        std::string source = cmd.value("source_widget", "");
+        std::string target = cmd.value("target_id", "");
+        g_bindings.erase(
+            std::remove_if(g_bindings.begin(), g_bindings.end(),
+                [&](const Binding& b) {
+                    return (source.empty() || b.source_widget == source) &&
+                           (target.empty() || b.target_id == target);
+                }),
+            g_bindings.end());
+        emit_json({{"type", "ack"}, {"cmd", type}});
+
+    } else if (type == "set_callback") {
+        CallbackAction cb;
+        cb.window_id = cmd.value("window", "");
+        cb.trigger_widget = cmd.value("trigger_widget", "");
+        cb.trigger_event = cmd.value("trigger_event", "clicked");
+        cb.action_type = cmd.value("action", "");
+        if (cmd.contains("params") && cmd["params"].is_object())
+            cb.action_params = cmd["params"];
+        cb.id = cb.trigger_widget + ":" + cb.trigger_event + ":" + cb.action_type;
+
+        // Remove existing callback with same id
+        g_callbacks.erase(
+            std::remove_if(g_callbacks.begin(), g_callbacks.end(),
+                [&](const CallbackAction& c) { return c.id == cb.id; }),
+            g_callbacks.end());
+        g_callbacks.push_back(std::move(cb));
+        emit_json({{"type", "ack"}, {"cmd", type},
+                   {"trigger", cmd.value("trigger_widget", "")},
+                   {"action", cmd.value("action", "")}});
+
+    } else if (type == "remove_callback") {
+        std::string trigger = cmd.value("trigger_widget", "");
+        std::string action = cmd.value("action", "");
+        g_callbacks.erase(
+            std::remove_if(g_callbacks.begin(), g_callbacks.end(),
+                [&](const CallbackAction& c) {
+                    return (trigger.empty() || c.trigger_widget == trigger) &&
+                           (action.empty() || c.action_type == action);
+                }),
+            g_callbacks.end());
+        emit_json({{"type", "ack"}, {"cmd", type}});
+
     } else if (type == "quit") {
         g_running = false;
         emit_json({{"type", "ack"}, {"cmd", type}});

@@ -364,4 +364,92 @@ extern std::map<std::string, Scene> g_scenes;
 extern std::string g_active_scene;
 extern int g_layer_order; // z-order counter
 
+
+// ─── Interactive Canvas: Hit Regions ────────────────────────────────────────
+
+enum class HitShape { Rect, Circle, Ellipse, Polygon };
+
+struct HitRegion {
+    std::string id;
+    std::string window_id;
+    std::string draw_layer; // optional associated draw_list widget id
+    HitShape shape = HitShape::Rect;
+
+    // Shape geometry (screen-space coordinates)
+    // Rect: p1=min corner, p2=max corner
+    // Circle: p1=center, p2[0]=radius
+    // Ellipse: p1=center, p2=[rx, ry]
+    // Polygon: polygon_points as x,y pairs
+    float p1[2] = {0, 0};
+    float p2[2] = {0, 0};
+    std::vector<float> polygon_points;
+
+    // Transform (applied to shape geometry)
+    float position[2] = {0, 0};
+    float rotation = 0.0f; // radians
+    float scale[2] = {1, 1};
+
+    // Interaction flags
+    bool hover_enabled = true;
+    bool click_enabled = true;
+    bool drag_enabled = false;
+    bool double_click_enabled = false;
+    bool wheel_enabled = false;
+
+    // Per-frame state
+    bool hovered = false;
+    bool dragging = false;
+
+    // Drag tracking
+    float drag_start[2] = {0, 0};
+    float last_mouse[2] = {0, 0};
+};
+
+// ─── Interactive Canvas: Draw Layer Transforms ──────────────────────────────
+
+struct DrawLayerTransform {
+    float translate[2] = {0, 0};
+    float rotation = 0.0f; // radians
+    float scale[2] = {1, 1};
+    float opacity = 1.0f;
+};
+
+// ─── Interactive Canvas: Bindings ──────────────────────────────────────────
+
+struct Binding {
+    std::string id;
+    std::string window_id;
+    std::string source_widget;
+    std::string source_property; // "value", "checked", "color_r", etc.
+    std::string target_type;     // "draw_layer", "hit_region", "widget"
+    std::string target_id;
+    std::string target_property; // "opacity", "position_x", "scale_x", etc.
+    float bind_scale = 1.0f;
+    float bind_offset = 0.0f;
+};
+
+// ─── Interactive Canvas: Declarative Callbacks ─────────────────────────────
+
+struct CallbackAction {
+    std::string id;
+    std::string window_id;
+    std::string trigger_widget;
+    std::string trigger_event; // "clicked", "changed", etc.
+    std::string action_type;   // "toggle_visibility", "set_visibility", "switch_scene", "set_value"
+    json action_params = json::object();
+};
+
+// ─── Interactive Canvas: Globals ───────────────────────────────────────────
+
+extern std::map<std::string, HitRegion>          g_hit_regions;
+extern std::mutex                                g_hit_regions_mutex;
+extern std::vector<json>                         g_canvas_events;
+extern std::mutex                                g_canvas_events_mutex;
+extern std::map<std::string, DrawLayerTransform> g_draw_layer_transforms; // key: "window_id/layer_id"
+extern std::vector<Binding>                      g_bindings;
+extern std::vector<CallbackAction>               g_callbacks;
+
+// Helper: emit a canvas event
+void emit_canvas_event(const std::string& window_id, const std::string& region_id,
+                       const std::string& event_type, const json& data = json{});
 #endif // TYPES_H

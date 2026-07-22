@@ -121,6 +121,15 @@ std::map<std::string, Scene> g_scenes;
 std::string                  g_active_scene;
 int                          g_layer_order = 0;
 
+// Interactive Canvas system
+std::map<std::string, HitRegion>          g_hit_regions;
+std::mutex                                g_hit_regions_mutex;
+std::vector<json>                         g_canvas_events;
+std::mutex                                g_canvas_events_mutex;
+std::map<std::string, DrawLayerTransform> g_draw_layer_transforms;
+std::vector<Binding>                      g_bindings;
+std::vector<CallbackAction>               g_callbacks;
+
 // ─── Forward declarations for symbols defined in other translation units ─────
 
 // Defined in commands.cpp; acquires g_mutex internally.
@@ -414,6 +423,21 @@ void emit_event(const std::string& window_id, const std::string& widget_id,
 
     std::lock_guard<std::mutex> lock(g_events_mutex);
     g_events.push_back(ev);
+}
+
+// Queue a canvas interaction event for emission at the end of the current frame.
+void emit_canvas_event(const std::string& window_id, const std::string& region_id,
+                       const std::string& event_type, const json& data) {
+    json ev;
+    ev["type"]   = "canvas_event";
+    ev["window"] = window_id;
+    ev["id"]     = region_id;
+    ev["event"]  = event_type;
+    ev["frame"]  = g_frame_count;
+    if (!data.empty()) ev["data"] = data;
+
+    std::lock_guard<std::mutex> lock(g_canvas_events_mutex);
+    g_canvas_events.push_back(ev);
 }
 
 // ─── Stdin Reader Thread ─────────────────────────────────────────────────────
@@ -851,6 +875,236 @@ int main(int argc, char** argv) {
             }
         }
 
+        // (k0) Process interactive canvas: bindings, hit regions, callbacks
+        {
+            ImGuiIO& canvas_io = ImGui::GetIO();
+            ImVec2 mouse_pos = canvas_io.MousePos;
+            bool mouse_down = canvas_io.MouseDown[0];
+            bool mouse_clicked = canvas_io.MouseClicked[0];
+            bool mouse_double_clicked = canvas_io.MouseDoubleClicked[0];
+            float wheel_y = canvas_io.MouseWheel;
+            float wheel_x = canvas_io.MouseWheelH;
+
+            // Process bindings: read source widget values and apply to targets
+            {
+                std::lock_guard<std::mutex> wlock(g_mutex);
+                for (auto& binding : g_bindings) {
+                    auto wit = g_windows.find(binding.window_id);
+                    if (wit == g_windows.end()) continue;
+                    Widget* src = find_widget_in_window(wit->second, binding.source_widget);
+                    if (!src) continue;
+
+                    float source_value = 0.0f;
+                    if (binding.source_property == "value") source_value = src->float_val[0];
+                    else if (binding.source_property == "checked") source_value = src->bool_val ? 1.0f : 0.0f;
+                    else if (binding.source_property == "int_value") source_value = (float)src->int_val[0];
+                    else if (binding.source_property == "color_r") source_value = src->color[0];
+                    else if (binding.source_property == "color_g") source_value = src->color[1];
+                    else if (binding.source_property == "color_b") source_value = src->color[2];
+                    else if (binding.source_property == "color_a") source_value = src->color[3];
+                    else if (binding.source_property == "selected") source_value = (float)src->selected;
+                    else continue;
+
+                    float result = source_value * binding.bind_scale + binding.bind_offset;
+
+                    if (binding.target_type == "draw_layer") {
+                        std::string key = binding.window_id + "/" + binding.target_id;
+                        auto& t = g_draw_layer_transforms[key];
+                        if (binding.target_property == "opacity") t.opacity = result;
+                        else if (binding.target_property == "position_x") t.translate[0] = result;
+                        else if (binding.target_property == "position_y") t.translate[1] = result;
+                        else if (binding.target_property == "scale_x") t.scale[0] = result;
+                        else if (binding.target_property == "scale_y") t.scale[1] = result;
+                        else if (binding.target_property == "rotation") t.rotation = result;
+                    } else if (binding.target_type == "hit_region") {
+                        auto hit_lock = std::unique_lock(g_hit_regions_mutex, std::defer_lock);
+                        hit_lock.lock();
+                        auto hit_it = g_hit_regions.find(binding.target_id);
+                        if (hit_it != g_hit_regions.end()) {
+                            auto& hr = hit_it->second;
+                            if (binding.target_property == "position_x") hr.position[0] = result;
+                            else if (binding.target_property == "position_y") hr.position[1] = result;
+                            else if (binding.target_property == "scale_x") hr.scale[0] = result;
+                            else if (binding.target_property == "scale_y") hr.scale[1] = result;
+                            else if (binding.target_property == "rotation") hr.rotation = result;
+                        }
+                    } else if (binding.target_type == "widget") {
+                        Widget* tgt = find_widget_in_window(wit->second, binding.target_id);
+                        if (tgt) {
+                            if (binding.target_property == "value") tgt->float_val[0] = result;
+                            else if (binding.target_property == "opacity") tgt->color[3] = result;
+                            else if (binding.target_property == "size_x") tgt->size_x = result;
+                            else if (binding.target_property == "size_y") tgt->size_y = result;
+                        }
+                    }
+                }
+            }
+
+            // Process hit regions: hit-test mouse against each region
+            {
+                std::lock_guard<std::mutex> hr_lock(g_hit_regions_mutex);
+                for (auto& [region_id, region] : g_hit_regions) {
+                    // Apply transform to get effective shape bounds
+                    float ox = region.position[0];
+                    float oy = region.position[1];
+                    float sx = region.scale[0];
+                    float sy = region.scale[1];
+
+                    bool inside = false;
+                    float mx = mouse_pos.x;
+                    float my = mouse_pos.y;
+
+                    // Transform mouse into region-local space
+                    float lx = (mx - ox);
+                    float ly = (my - oy);
+                    if (region.rotation != 0.0f) {
+                        float c = cosf(-region.rotation);
+                        float s = sinf(-region.rotation);
+                        float rx = lx * c - ly * s;
+                        float ry = lx * s + ly * c;
+                        lx = rx; ly = ry;
+                    }
+                    if (sx != 0.0f) lx /= sx;
+                    if (sy != 0.0f) ly /= sy;
+
+                    switch (region.shape) {
+                    case HitShape::Rect:
+                        inside = (lx >= region.p1[0] && lx <= region.p2[0] &&
+                                  ly >= region.p1[1] && ly <= region.p2[1]);
+                        break;
+                    case HitShape::Circle: {
+                        float dx = lx - region.p1[0];
+                        float dy = ly - region.p1[1];
+                        float r = region.p2[0];
+                        inside = (dx * dx + dy * dy) <= r * r;
+                        break;
+                    }
+                    case HitShape::Ellipse: {
+                        float dx = (lx - region.p1[0]) / (region.p2[0] > 0 ? region.p2[0] : 1.0f);
+                        float dy = (ly - region.p1[1]) / (region.p2[1] > 0 ? region.p2[1] : 1.0f);
+                        inside = (dx * dx + dy * dy) <= 1.0f;
+                        break;
+                    }
+                    case HitShape::Polygon: {
+                        // Ray-casting point-in-polygon test
+                        const auto& pts = region.polygon_points;
+                        size_t n = pts.size() / 2;
+                        if (n >= 3) {
+                            int crossings = 0;
+                            for (size_t i = 0, j = n - 1; i < n; j = i++) {
+                                float yi = pts[i * 2 + 1], yj = pts[j * 2 + 1];
+                                float xi = pts[i * 2], xj = pts[j * 2];
+                                if ((yi > ly) != (yj > ly)) {
+                                    float x_intersect = xj + (ly - yj) / (yi - yj) * (xi - xj);
+                                    if (lx < x_intersect) crossings++;
+                                }
+                            }
+                            inside = (crossings % 2) == 1;
+                        }
+                        break;
+                    }
+                    }
+
+                    bool was_hovered = region.hovered;
+                    region.hovered = inside;
+
+                    // Hover events
+                    if (region.hover_enabled && inside && !was_hovered) {
+                        emit_canvas_event(region.window_id, region_id, "hover",
+                                          {{"position", {mx, my}}});
+                    }
+
+                    // Click events
+                    if (region.click_enabled && inside && mouse_clicked) {
+                        emit_canvas_event(region.window_id, region_id, "click",
+                                          {{"position", {mx, my}}});
+                    }
+
+                    // Double-click events
+                    if (region.double_click_enabled && inside && mouse_double_clicked) {
+                        emit_canvas_event(region.window_id, region_id, "double_click",
+                                          {{"position", {mx, my}}});
+                    }
+
+                    // Drag events
+                    if (region.drag_enabled && inside && mouse_down && !region.dragging) {
+                        region.dragging = true;
+                        region.drag_start[0] = mx;
+                        region.drag_start[1] = my;
+                        region.last_mouse[0] = mx;
+                        region.last_mouse[1] = my;
+                        emit_canvas_event(region.window_id, region_id, "drag_start",
+                                          {{"position", {mx, my}}});
+                    }
+                    if (region.drag_enabled && region.dragging) {
+                        if (mouse_down) {
+                            float dx = mx - region.last_mouse[0];
+                            float dy = my - region.last_mouse[1];
+                            if (dx != 0.0f || dy != 0.0f) {
+                                region.last_mouse[0] = mx;
+                                region.last_mouse[1] = my;
+                                emit_canvas_event(region.window_id, region_id, "drag",
+                                                  {{"delta", {dx, dy}},
+                                                   {"position", {mx, my}}});
+                            }
+                        } else {
+                            region.dragging = false;
+                            emit_canvas_event(region.window_id, region_id, "drag_end",
+                                              {{"position", {mx, my}}});
+                        }
+                    }
+
+                    // Wheel events
+                    if (region.wheel_enabled && inside && (wheel_x != 0.0f || wheel_y != 0.0f)) {
+                        emit_canvas_event(region.window_id, region_id, "wheel",
+                                          {{"delta", {wheel_x, wheel_y}}});
+                    }
+                }
+            }
+
+            // Process declarative callbacks
+            {
+                std::lock_guard<std::mutex> wlock(g_mutex);
+                for (auto& cb : g_callbacks) {
+                    auto wit = g_windows.find(cb.window_id);
+                    if (wit == g_windows.end()) continue;
+                    Widget* trigger = find_widget_in_window(wit->second, cb.trigger_widget);
+                    if (!trigger) continue;
+
+                    bool fired = false;
+                    if (cb.trigger_event == "clicked" && trigger->clicked) fired = true;
+                    else if (cb.trigger_event == "changed" && trigger->changed) fired = true;
+                    else if (cb.trigger_event == "hovered" && trigger->hovered) fired = true;
+
+                    if (!fired) continue;
+
+                    if (cb.action_type == "toggle_visibility") {
+                        std::string target = cb.action_params.value("widget", "");
+                        Widget* tgt = find_widget_in_window(wit->second, target);
+                        if (tgt) {
+                            if (tgt->visible_condition == "never")
+                                tgt->visible_condition = "always";
+                            else
+                                tgt->visible_condition = "never";
+                        }
+                    } else if (cb.action_type == "set_visibility") {
+                        std::string target = cb.action_params.value("widget", "");
+                        bool visible = cb.action_params.value("visible", true);
+                        Widget* tgt = find_widget_in_window(wit->second, target);
+                        if (tgt) tgt->visible_condition = visible ? "always" : "never";
+                    } else if (cb.action_type == "set_value") {
+                        std::string target = cb.action_params.value("widget", "");
+                        Widget* tgt = find_widget_in_window(wit->second, target);
+                        if (tgt && cb.action_params.contains("value"))
+                            tgt->float_val[0] = cb.action_params["value"].get<float>();
+                    } else if (cb.action_type == "switch_scene") {
+                        std::string scene = cb.action_params.value("scene", "");
+                        if (!scene.empty()) g_active_scene = scene;
+                    }
+                }
+            }
+        }
+
         // (k) Render and present
         ImGui::Render();
         int fb_w, fb_h;
@@ -972,6 +1226,15 @@ int main(int argc, char** argv) {
                 emit_json(ev);
             }
             g_events.clear();
+        }
+
+        // (l2) Flush queued canvas events to stdout
+        {
+            std::lock_guard<std::mutex> lock(g_canvas_events_mutex);
+            for (auto& ev : g_canvas_events) {
+                emit_json(ev);
+            }
+            g_canvas_events.clear();
         }
 
         // (m) Advance frame counter

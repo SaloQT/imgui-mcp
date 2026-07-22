@@ -108,7 +108,12 @@ jobs:
             ```
 
             ### What's included
-            - 74 MCP tools, 102 widget types
+            - 84 MCP tools, 102 widget types
+            - **Interactive canvas**: hit regions (rect, circle, ellipse, polygon) with hover, click, drag, wheel, double-click events
+            - **Draw layer transforms**: translate, rotate, scale, opacity per draw layer
+            - **Per-object draw command updates**: change one command without replacing the layer
+            - **Declarative bindings**: wire widget values to visual properties (opacity, position, scale)
+            - **Declarative callbacks**: button click toggles visibility, switches scenes, sets values — no polling
             - Runtime TTF/OTF font stacks with merged icon/symbol fallbacks
             - Portable JSON designs preserve active fonts and live animations
             - Visual feedback (screenshots)

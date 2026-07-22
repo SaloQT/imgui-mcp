@@ -873,6 +873,33 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DrawList: {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         if (dl) {
+            // Look up per-layer transform
+            std::string layer_key = win_id + "/" + w.id;
+            DrawLayerTransform layer_t;
+            auto lt_it = g_draw_layer_transforms.find(layer_key);
+            if (lt_it != g_draw_layer_transforms.end())
+                layer_t = lt_it->second;
+
+            float lt_tx = layer_t.translate[0];
+            float lt_ty = layer_t.translate[1];
+            float lt_sx = layer_t.scale[0];
+            float lt_sy = layer_t.scale[1];
+            float lt_rot = layer_t.rotation;
+            float lt_opacity = layer_t.opacity;
+            float lt_cos = cosf(lt_rot);
+            float lt_sin = sinf(lt_rot);
+
+            // Transform a point through the layer transform
+            auto xform = [&](ImVec2 p) -> ImVec2 {
+                // Scale
+                p.x *= lt_sx; p.y *= lt_sy;
+                // Rotate
+                float rx = p.x * lt_cos - p.y * lt_sin;
+                float ry = p.x * lt_sin + p.y * lt_cos;
+                // Translate
+                return ImVec2(rx + lt_tx, ry + lt_ty);
+            };
+
             const size_t command_count =
                 std::min(w.draw_commands.size(), MAX_DRAW_COMMANDS);
             for (size_t command_index = 0;
@@ -880,16 +907,24 @@ void render_widget(const std::string& win_id, Widget& w) {
                 const auto& cmd = w.draw_commands[command_index];
                 const int segment_count =
                     std::clamp(cmd.num_segments, 0, MAX_DRAW_SEGMENTS);
+
+                // Apply opacity to color
+                float alpha = cmd.color[3] * lt_opacity;
+                if (alpha < 0.0f) alpha = 0.0f;
+                if (alpha > 1.0f) alpha = 1.0f;
                 ImU32 col = ImGui::ColorConvertFloat4ToU32(
-                    ImVec4(cmd.color[0], cmd.color[1], cmd.color[2], cmd.color[3]));
-                auto packed_color = [](const float color[4]) {
+                    ImVec4(cmd.color[0], cmd.color[1], cmd.color[2], alpha));
+                auto packed_color = [&](const float color[4]) {
+                    float a = color[3] * lt_opacity;
+                    if (a < 0.0f) a = 0.0f;
+                    if (a > 1.0f) a = 1.0f;
                     return ImGui::ColorConvertFloat4ToU32(
-                        ImVec4(color[0], color[1], color[2], color[3]));
+                        ImVec4(color[0], color[1], color[2], a));
                 };
-                ImVec2 p1(cmd.p1[0], cmd.p1[1]);
-                ImVec2 p2(cmd.p2[0], cmd.p2[1]);
-                ImVec2 p3(cmd.p3[0], cmd.p3[1]);
-                ImVec2 p4(cmd.p4[0], cmd.p4[1]);
+                ImVec2 p1 = xform(ImVec2(cmd.p1[0], cmd.p1[1]));
+                ImVec2 p2 = xform(ImVec2(cmd.p2[0], cmd.p2[1]));
+                ImVec2 p3 = xform(ImVec2(cmd.p3[0], cmd.p3[1]));
+                ImVec2 p4 = xform(ImVec2(cmd.p4[0], cmd.p4[1]));
 
                 switch (cmd.type) {
                 case 0: // Line
@@ -902,10 +937,10 @@ void render_widget(const std::string& win_id, Widget& w) {
                     dl->AddRectFilled(p1, p2, col);
                     break;
                 case 3: // Circle
-                    dl->AddCircle(p1, p2[0], col, segment_count, cmd.thickness);
+                    dl->AddCircle(p1, p2[0] * lt_sx, col, segment_count, cmd.thickness);
                     break;
                 case 4: // CircleFilled
-                    dl->AddCircleFilled(p1, p2[0], col, segment_count);
+                    dl->AddCircleFilled(p1, p2[0] * lt_sx, col, segment_count);
                     break;
                 case 5: // Triangle
                     dl->AddTriangle(p1, p2, p3, col, cmd.thickness);
@@ -947,11 +982,12 @@ void render_widget(const std::string& win_id, Widget& w) {
                                            segment_count);
                     break;
                 case 14: // Ellipse
-                    dl->AddEllipse(p1, p2, col, cmd.p3[0], segment_count,
-                                   cmd.thickness);
+                    dl->AddEllipse(p1, ImVec2(p2[0] * lt_sx, p2[1] * lt_sy), col,
+                                   cmd.p3[0], segment_count, cmd.thickness);
                     break;
                 case 15: // EllipseFilled
-                    dl->AddEllipseFilled(p1, p2, col, cmd.p3[0], segment_count);
+                    dl->AddEllipseFilled(p1, ImVec2(p2[0] * lt_sx, p2[1] * lt_sy),
+                                         col, cmd.p3[0], segment_count);
                     break;
                 case 16: // RectGradient (TL, TR, BR, BL)
                     dl->AddRectFilledMultiColor(
@@ -959,7 +995,7 @@ void render_widget(const std::string& win_id, Widget& w) {
                         packed_color(cmd.color3), packed_color(cmd.color4));
                     break;
                 case 17: // Arc: p1=center, p2.x=radius, p2.y=start, p3.x=end
-                    dl->PathArcTo(p1, p2.x, p2.y, p3.x, segment_count);
+                    dl->PathArcTo(p1, p2.x * lt_sx, p2.y, p3.x, segment_count);
                     dl->PathStroke(col, 0, cmd.thickness);
                     break;
                 default:

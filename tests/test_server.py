@@ -231,7 +231,7 @@ class ImGuiAppTests(unittest.TestCase):
 class MCPServerTests(unittest.TestCase):
     def test_tool_catalog_is_unique_and_complete(self) -> None:
         names = [tool["name"] for tool in server.TOOLS]
-        self.assertEqual(74, len(names))
+        self.assertEqual(84, len(names))
         self.assertEqual(len(names), len(set(names)))
 
     def test_widget_color_schema_accepts_rgb_and_rgba(self) -> None:
@@ -505,7 +505,7 @@ class OfficialSDKIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 status = await session.call_tool("imgui_app_status", {})
 
         self.assertEqual("imgui-mcp", initialized.serverInfo.name)
-        self.assertEqual(74, len(tools.tools))
+        self.assertEqual(84, len(tools.tools))
         self.assertEqual("imgui_create_window", tools.tools[0].name)
         self.assertFalse(status.isError)
         self.assertEqual(server.SERVER_VERSION, status.structuredContent["version"])

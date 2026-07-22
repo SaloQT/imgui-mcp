@@ -850,6 +850,174 @@ class NativeProtocolTests(unittest.TestCase):
             self.app.send({"cmd": "unload_texture", "id": "bounded"})
             self.assertEqual("ack", self.app.read_json().get("type"))
 
+    # ─── Interactive Canvas Tests ──────────────────────────────────────────
+
+    def test_hit_region_lifecycle(self) -> None:
+        self.app.send({"cmd": "create_window", "id": "canvas", "title": "Canvas"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        # Add a rectangular hit region
+        self.app.send({
+            "cmd": "add_hit_region", "window": "canvas", "id": "btn1",
+            "shape": "rect", "p1": [10, 10], "p2": [100, 50],
+            "interactions": ["hover", "click", "drag"],
+        })
+        ack = self.app.read_json()
+        self.assertEqual("ack", ack.get("type"), ack)
+        self.assertEqual("btn1", ack.get("id"))
+
+        # Add a circular hit region with transform
+        self.app.send({
+            "cmd": "add_hit_region", "window": "canvas", "id": "circle1",
+            "shape": "circle", "p1": [200, 200], "p2": [50, 0],
+            "transform": {"position": [10, 20], "scale": [1.5, 1.5]},
+        })
+        ack2 = self.app.read_json()
+        self.assertEqual("ack", ack2.get("type"), ack2)
+
+        # Update the hit region
+        self.app.send({
+            "cmd": "update_hit_region", "id": "btn1",
+            "p2": [120, 60],
+            "transform": {"position": [5, 5]},
+        })
+        ack3 = self.app.read_json()
+        self.assertEqual("ack", ack3.get("type"), ack3)
+
+        # Remove the hit region
+        self.app.send({"cmd": "remove_hit_region", "id": "btn1"})
+        ack4 = self.app.read_json()
+        self.assertEqual("ack", ack4.get("type"), ack4)
+
+        # Remove the second one
+        self.app.send({"cmd": "remove_hit_region", "id": "circle1"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+    def test_polygon_hit_region(self) -> None:
+        self.app.send({"cmd": "create_window", "id": "poly", "title": "Poly"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        self.app.send({
+            "cmd": "add_hit_region", "window": "poly", "id": "poly1",
+            "shape": "polygon",
+            "points": [[260, 200], [440, 200], [450, 650], [250, 650]],
+            "interactions": ["hover", "click", "drag"],
+        })
+        ack = self.app.read_json()
+        self.assertEqual("ack", ack.get("type"), ack)
+
+        self.app.send({"cmd": "remove_hit_region", "id": "poly1"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+    def test_get_canvas_events_returns_empty_initially(self) -> None:
+        self.app.send({"cmd": "get_canvas_events", "max_events": 10})
+        result = self.app.read_json()
+        self.assertEqual("canvas_events", result.get("type"), result)
+        self.assertEqual([], result.get("events"))
+        self.assertEqual(0, result.get("remaining"))
+
+    def test_update_draw_command(self) -> None:
+        self.app.send({"cmd": "create_window", "id": "dc", "title": "DrawCmd"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        # Create a draw layer with two commands
+        self.app.send({
+            "cmd": "draw", "window": "dc", "id": "layer1",
+            "commands": [
+                {"type": "rect_filled", "p1": [0, 0], "p2": [100, 100], "color": [1, 0, 0, 1]},
+                {"type": "circle", "p1": [50, 50], "p2": [25, 0], "color": [0, 1, 0, 1]},
+            ],
+        })
+        draw_ack = self.app.read_json()
+        self.assertEqual("ack", draw_ack.get("type"), draw_ack)
+
+        # Update the first command's color
+        self.app.send({
+            "cmd": "update_draw_command", "window": "dc", "layer": "layer1",
+            "index": 0, "fields": {"color": [0, 0, 1, 1]},
+        })
+        ack = self.app.read_json()
+        self.assertEqual("ack", ack.get("type"), ack)
+
+        # Out of range index
+        self.app.send({
+            "cmd": "update_draw_command", "window": "dc", "layer": "layer1",
+            "index": 99, "fields": {"color": [1, 1, 1, 1]},
+        })
+        err = self.app.read_json()
+        self.assertEqual("error", err.get("type"), err)
+
+    def test_transform_draw_layer(self) -> None:
+        self.app.send({"cmd": "create_window", "id": "tl", "title": "Transform"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        self.app.send({
+            "cmd": "draw", "window": "tl", "id": "bg",
+            "commands": [{"type": "rect_filled", "p1": [0, 0], "p2": [200, 200], "color": [1, 1, 0, 1]}],
+        })
+        self.app.read_json()
+
+        self.app.send({
+            "cmd": "transform_draw_layer", "window": "tl", "layer": "bg",
+            "translate": [50, 30], "rotation": 0.5, "scale": [2.0, 2.0], "opacity": 0.8,
+        })
+        ack = self.app.read_json()
+        self.assertEqual("ack", ack.get("type"), ack)
+        self.assertEqual("bg", ack.get("layer"))
+
+    def test_bind_and_unbind(self) -> None:
+        self.app.send({"cmd": "create_window", "id": "bw", "title": "BindWin"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        self.app.send({
+            "cmd": "add_widget", "window": "bw", "id": "slider1",
+            "widget_type": "slider_float", "label": "Opacity",
+            "value": 0.5, "min": 0, "max": 1,
+        })
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        self.app.send({
+            "cmd": "bind", "window": "bw",
+            "source_widget": "slider1", "source_property": "value",
+            "target_type": "draw_layer", "target_id": "bg",
+            "target_property": "opacity", "scale": 1.0, "offset": 0.0,
+        })
+        ack = self.app.read_json()
+        self.assertEqual("ack", ack.get("type"), ack)
+
+        self.app.send({"cmd": "unbind", "source_widget": "slider1"})
+        ack2 = self.app.read_json()
+        self.assertEqual("ack", ack2.get("type"), ack2)
+
+    def test_set_and_remove_callback(self) -> None:
+        self.app.send({"cmd": "create_window", "id": "cb", "title": "Callback"})
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        self.app.send({
+            "cmd": "add_widget", "window": "cb", "id": "toggle_btn",
+            "widget_type": "button", "label": "Toggle",
+        })
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        self.app.send({
+            "cmd": "add_widget", "window": "cb", "id": "target_text",
+            "widget_type": "text", "content": "Hello",
+        })
+        self.assertEqual("ack", self.app.read_json().get("type"))
+
+        self.app.send({
+            "cmd": "set_callback", "window": "cb",
+            "trigger_widget": "toggle_btn", "trigger_event": "clicked",
+            "action": "toggle_visibility",
+            "params": {"widget": "target_text"},
+        })
+        ack = self.app.read_json()
+        self.assertEqual("ack", ack.get("type"), ack)
+
+        self.app.send({"cmd": "remove_callback", "trigger_widget": "toggle_btn"})
+        ack2 = self.app.read_json()
+        self.assertEqual("ack", ack2.get("type"), ack2)
+
 
 if __name__ == "__main__":
     unittest.main()
