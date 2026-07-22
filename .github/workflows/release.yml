@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libgl1-mesa-dev cmake g++
+
+      - name: Build
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          NAME="imgui-mcp-${VERSION}-linux-x64"
+          mkdir -p "/tmp/${NAME}/bin"
+
+          # Binary
+          cp build/imgui_mcp_app "/tmp/${NAME}/bin/"
+
+          # Source
+          cp -r src/ "/tmp/${NAME}/src/"
+          cp -r vendor/ "/tmp/${NAME}/vendor/"
+          cp -r cmake/ "/tmp/${NAME}/cmake/"
+          cp CMakeLists.txt Makefile server.py demo.py setup.sh README.md LICENSE "/tmp/${NAME}/"
+
+          # IDE configs
+          cp .mcp.json "/tmp/${NAME}/"
+          cp -r .omp/ .cursor/ .vscode/ .windsurf/ .gemini/ .roo/ .zed/ .codex/ "/tmp/${NAME}/" 2>/dev/null || true
+
+          # Create tarball
+          cd /tmp
+          tar -czf "${NAME}.tar.gz" "${NAME}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: /tmp/imgui-mcp-*-linux-x64.tar.gz
+
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW + SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64 cmake zip wget
+
+          # Download SDL2 MinGW dev libraries
+          wget -q https://github.com/libsdl-org/SDL/releases/download/release-2.30.0/SDL2-devel-2.30.0-mingw.tar.gz
+          tar -xzf SDL2-devel-2.30.0-mingw.tar.gz
+          mkdir -p cross
+          cp -r SDL2-2.30.0/x86_64-w64-mingw32/* cross/
+
+      - name: Cross-compile
+        run: |
+          mkdir -p build-win
+          cd build-win
+          cmake .. -DCMAKE_TOOLCHAIN_FILE=../cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          NAME="imgui-mcp-${VERSION}-windows-x64"
+          mkdir -p "/tmp/${NAME}/bin"
+
+          # Binary + DLL
+          cp build-win/imgui_mcp_app.exe "/tmp/${NAME}/bin/"
+          cp cross/bin/SDL2.dll "/tmp/${NAME}/bin/"
+
+          # Source
+          cp -r src/ "/tmp/${NAME}/src/"
+          cp -r vendor/ "/tmp/${NAME}/vendor/"
+          cp -r cmake/ "/tmp/${NAME}/cmake/"
+          cp -r cross/ "/tmp/${NAME}/cross/"
+          cp CMakeLists.txt server.py demo.py setup.ps1 README.md LICENSE "/tmp/${NAME}/"
+
+          # IDE configs
+          cp .mcp.json "/tmp/${NAME}/"
+          cp -r .omp/ .cursor/ .vscode/ .windsurf/ .gemini/ .roo/ .zed/ .codex/ "/tmp/${NAME}/" 2>/dev/null || true
+
+          # Installer
+          cat > "/tmp/${NAME}/install.bat" <<'EOF'
+          @echo off
+          echo imgui-mcp Windows Installer
+          echo ===========================
+          powershell -ExecutionPolicy Bypass -File "%~dp0setup.ps1" -SkipBuild
+          pause
+          EOF
+
+          # Create zip
+          cd /tmp
+          zip -qr "${NAME}.zip" "${NAME}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: /tmp/imgui-mcp-*-windows-x64.zip
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            /tmp/artifacts/linux-x64/*.tar.gz
+            /tmp/artifacts/windows-x64/*.zip
+          body: |
+            ## imgui-mcp ${{ github.ref_name }}
+
+            AI agents design, control & debug Dear ImGui interfaces in real-time.
+
+            ### Install
+
+            **Linux:**
+            ```bash
+            tar -xzf imgui-mcp-*-linux-x64.tar.gz
+            cd imgui-mcp-*-linux-x64
+            ./setup.sh
+            ```
+
+            **Windows:**
+            ```
+            Extract zip → run install.bat
+            ```
+
+            ### What's included
+            - 70+ MCP tools, 102 widget types
+            - Visual feedback (screenshots)
+            - Input simulation, animation, theming
+            - Game UI patterns (health bars, inventory, dialogue, minimaps)
+            - Export to C++, Lua, JSON
+            - Works with Claude, Cursor, VS Code, omp, Windsurf, Zed, Gemini CLI & more
