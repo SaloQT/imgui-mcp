@@ -3900,6 +3900,68 @@ void process_command(const json& cmd) {
             g_textures.erase(it);
         }
         emit_json({{"type","ack"},{"cmd",type},{"id",id}});
+    } else if (type == "load_font") {
+        const std::string id = cmd.value("id", "");
+        const std::string path = cmd.value("path", "");
+        const float size_pixels = cmd.value("size_pixels", 16.0f);
+        if (id.empty() || id.size() > 128) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "font id must contain 1-128 characters"}});
+            return;
+        }
+        if (g_fonts.count(id) != 0) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "font id is already loaded: " + id}});
+            return;
+        }
+        if (size_pixels < 8.0f || size_pixels > 96.0f) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "font size_pixels must be between 8 and 96"}});
+            return;
+        }
+        std::error_code font_path_error;
+        if (path.empty() ||
+            !std::filesystem::is_regular_file(path, font_path_error) ||
+            font_path_error) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "font file does not exist: " + path}});
+            return;
+        }
+        ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(
+            path.c_str(), size_pixels);
+        if (!font) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "failed to load font: " + path}});
+            return;
+        }
+        g_fonts.emplace(id, LoadedFont{id, path, size_pixels, font});
+        emit_json({{"type", "ack"}, {"cmd", type}, {"id", id},
+                   {"path", path}, {"size_pixels", size_pixels}});
+    } else if (type == "set_font") {
+        const std::string id = cmd.value("id", "default");
+        if (id == "default") {
+            ImGui::GetIO().FontDefault = nullptr;
+        } else {
+            const auto it = g_fonts.find(id);
+            if (it == g_fonts.end()) {
+                emit_json({{"type", "error"}, {"cmd", type},
+                           {"message", "font is not loaded: " + id}});
+                return;
+            }
+            ImGui::GetIO().FontDefault = it->second.font;
+        }
+        emit_json({{"type", "ack"}, {"cmd", type}, {"id", id}});
+    } else if (type == "list_fonts") {
+        json fonts = json::array({
+            {{"id", "default"}, {"path", ""}, {"size_pixels", 0.0f},
+             {"active", ImGui::GetIO().FontDefault == nullptr}}
+        });
+        for (const auto& [id, font] : g_fonts) {
+            fonts.push_back({{"id", id}, {"path", font.path},
+                             {"size_pixels", font.size_pixels},
+                             {"active", ImGui::GetIO().FontDefault == font.font}});
+        }
+        emit_json({{"type", "fonts"}, {"cmd", type}, {"fonts", fonts}});
     } else if (type == "set_theme") {
         std::string theme = cmd.value("theme", "dark");
         ImGuiStyle& style = ImGui::GetStyle();
