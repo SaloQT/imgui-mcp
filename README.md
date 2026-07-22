@@ -1,286 +1,433 @@
 <p align="center">
-  <h1 align="center">imgui-mcp</h1>
+  <h1 align="center">🎮 imgui-mcp</h1>
   <p align="center">
-    <strong>Let AI agents design, control, and debug Dear ImGui interfaces in real-time.</strong>
+    <strong>The MCP server that lets AI agents <em>see</em>, <em>build</em>, and <em>iterate</em> on Dear ImGui game UIs in real-time.</strong>
   </p>
   <p align="center">
-    <a href="#quick-start"><img src="https://img.shields.io/badge/Quick_Start-↓-blue" alt="Quick Start"></a>
-    <a href="https://github.com/ocornut/imgui/releases/tag/v1.92.8"><img src="https://img.shields.io/badge/Dear_ImGui-v1.92.8-ff69b4" alt="ImGui Version"></a>
-    <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-2025--06--18-orange" alt="MCP Protocol"></a>
-    <a href="https://github.com/SaloQT/imgui-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green" alt="License"></a>
-    <img src="https://img.shields.io/badge/Tools-70+-purple" alt="70+ MCP Tools">
-    <img src="https://img.shields.io/badge/Widgets-102-red" alt="102 Widget Types">
+    <a href="https://github.com/SaloQT/imgui-mcp/releases"><img src="https://img.shields.io/github/v/release/SaloQT/imgui-mcp?style=flat&colorA=222222&colorB=58A6FF" alt="Release"></a>
+    <a href="https://github.com/ocornut/imgui/releases/tag/v1.92.8"><img src="https://img.shields.io/badge/Dear_ImGui-v1.92.8-ff69b4?style=flat&colorA=222222" alt="ImGui"></a>
+    <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-2025--06--18-orange?style=flat&colorA=222222" alt="MCP"></a>
+    <img src="https://img.shields.io/badge/70+_tools-8A2BE2?style=flat&colorA=222222" alt="Tools">
+    <img src="https://img.shields.io/badge/102_widgets-DC143C?style=flat&colorA=222222" alt="Widgets">
+    <img src="https://img.shields.io/badge/13_IDE%2FCLI_tools-3FB950?style=flat&colorA=222222" alt="Supported Tools">
+    <a href="https://github.com/SaloQT/imgui-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat&colorA=222222" alt="License"></a>
+  </p>
+  <p align="center">
+    <a href="#quick-start">Quick Start</a> ·
+    <a href="#all-70-mcp-tools">All Tools</a> ·
+    <a href="#all-102-widget-types">All Widgets</a> ·
+    <a href="#game-ui-patterns">Game Patterns</a> ·
+    <a href="#supported-idecli-tools">Supported Tools</a> ·
+    <a href="https://github.com/SaloQT/imgui-mcp/releases">Releases</a>
   </p>
 </p>
 
 ---
 
-**imgui-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives AI coding agents full control over a live [Dear ImGui](https://github.com/ocornut/imgui) application. Design game HUDs, debug UI layouts, prototype interfaces, and iterate visually — all through natural language.
+## The Problem
 
-Works with **Claude Desktop**, **Claude Code**, **Cursor**, **VS Code (Copilot)**, **Windsurf**, **omp**, **Zed**, **Gemini CLI**, **Codex CLI**, **Cline**, **Roo Code**, **Continue**, and **Augment**.
+AI coding agents can generate UI code — but they **can't see the result**. They write ImGui calls blind, hope the layout works, and never iterate visually. Game UI development needs a feedback loop: *place → preview → adjust → repeat*.
 
-## Why?
+## The Solution
 
-AI agents can write code, but they **can't see** the UI they're building. imgui-mcp closes the loop:
+**imgui-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives any AI agent a live, interactive [Dear ImGui](https://github.com/ocornut/imgui) canvas with **70+ tools**, **102 widget types**, and a **visual feedback loop**:
 
 ```
-Agent creates widget → Agent takes screenshot → Agent sees result → Agent iterates
+┌──────────────────────────────────────────────────────────────────┐
+│  "Build a game HUD with health bar, inventory, and skill bar"    │
+└───────────────────────────────┬──────────────────────────────────┘
+                                ▼
+┌─────────────┐    MCP     ┌──────────┐   JSON    ┌─────────────┐
+│  AI Agent   │◄──────────►│ server.py │◄────────►│  Live ImGui  │
+│  (any LLM)  │  70 tools  │ 0 deps   │  stdin/  │  SDL2+GL     │
+└─────────────┘            └──────────┘  stdout   └──────┬───────┘
+       ▲                                                 │
+       │              screenshot (BMP)                   │
+       └─────────────────────────────────────────────────┘
+                    Agent SEES what it built
 ```
 
-No more blind UI development. The agent designs, previews, adjusts, and exports — like a developer with eyes.
+The agent creates widgets, takes a screenshot, **sees the rendered result**, and iterates — like a developer with eyes.
 
-## Features
+---
 
-| Category | What you get |
-|----------|-------------|
-| **70+ MCP Tools** | Create windows, add widgets, draw shapes, animate, theme, export |
-| **102 Widget Types** | Every ImGui widget + game patterns (health bars, inventory grids, dialogue boxes, minimaps, skill bars) |
-| **Visual Feedback** | Screenshot capture → agent sees what it built |
-| **Input Simulation** | Click buttons, type text, hover, scroll — test UI behavior |
-| **Animation** | 7 easing functions, property tweens, loop/ping-pong |
-| **Theming** | 7 presets (dark, light, classic, fantasy, sci-fi, retro, minimal) + full customization |
-| **Layout** | 9-point anchor system, resolution presets (720p→4K+ultrawide), DPI scaling |
-| **Workflow** | Undo/redo, named snapshots, version history |
-| **Scenes** | Multi-window composition, layer ordering, conditional visibility |
-| **Export** | Generate C++, Lua, or JSON from any layout |
-| **Game Patterns** | Health/mana bars, inventory grids, dialogue boxes, minimaps, cooldown radials, quest trackers, character sheets |
+## Features at a Glance
+
+| | |
+|---|---|
+| 🖼️ **Visual Feedback** | Screenshot capture (full, per-widget, annotated) — the agent sees its work |
+| 🎮 **Game UI Patterns** | Health bars, mana bars, inventory grids, dialogue boxes, minimaps, cooldown radials, skill bars, quest trackers, character sheets, notification toasts, tooltip cards |
+| 🖱️ **Input Simulation** | Click buttons, type text, hover widgets, scroll, press keys — test UI behavior programmatically |
+| ✨ **Animation** | 7 easing functions (linear, ease-in/out, bounce, elastic, back), property tweens, loop/ping-pong |
+| 🎨 **Theming** | 7 presets (dark, light, classic, fantasy, sci-fi, retro, minimal) + per-color and per-variable customization |
+| 📐 **Layout** | 9-point anchor system, resolution presets (720p → 4K + ultrawide + mobile), DPI scaling, safe areas |
+| 🔄 **Workflow** | Undo/redo (50-deep), named snapshots, save/load/delete layout versions |
+| 🎬 **Scenes** | Multi-window composition, z-order layers, conditional visibility (`widget.checked==true`) |
+| 📦 **Export** | Generate production C++, Lua, or JSON from any layout — import JSON back |
+| 🖌️ **Drawing** | Lines, rects, circles, triangles, beziers, polylines, text — direct ImDrawList access |
+| 🧩 **102 Widgets** | Every Dear ImGui widget + 11 game-specific patterns |
+| 🔌 **Zero Dependencies** | Python server needs no pip packages. C++ app vendors ImGui. |
+
+---
 
 ## Quick Start
 
-### Prerequisites
+### Option A: Pre-built release (no compiler needed)
 
-- **Python 3.8+** (no pip packages needed)
-- **SDL2** + **OpenGL** (for the rendering backend)
-- **CMake** + **C++17 compiler** (to build from source)
+Download from [Releases](https://github.com/SaloQT/imgui-mcp/releases):
 
-### Install
+**Linux:**
+```bash
+tar -xzf imgui-mcp-*-linux-x64.tar.gz
+cd imgui-mcp-*-linux-x64
+./setup.sh    # configures all 13 IDE/CLI tools
+```
+
+**Windows:**
+```
+Extract zip → double-click install.bat
+```
+
+### Option B: Build from source
 
 ```bash
 git clone https://github.com/SaloQT/imgui-mcp.git
 cd imgui-mcp
-make build    # or: mkdir build && cd build && cmake .. && make -j$(nproc)
-./setup.sh    # installs MCP config for all supported tools
+make build    # requires: cmake, g++, libsdl2-dev, libgl1-mesa-dev
+./setup.sh
 ```
 
-**Windows:**
-```powershell
-# Extract release zip, then:
-powershell -ExecutionPolicy Bypass -File .\setup.ps1
+### Verify it works
+
+```bash
+python3 demo.py   # runs a full feature demonstration
 ```
 
-### Configure your tool
+---
 
-<details>
-<summary><strong>Claude Desktop / Claude Code</strong></summary>
+## All 70 MCP Tools
 
-Add to `claude_desktop_config.json` or `.mcp.json`:
-```json
-{
-  "mcpServers": {
-    "imgui": {
-      "command": "python3",
-      "args": ["/path/to/imgui-mcp/server.py"]
-    }
-  }
-}
+### Windows & Widgets (7)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_create_window` | Create a window with title, position, size, and flags (menubar, no_resize, no_move, no_collapse, no_title_bar, always_auto_resize) |
+| `imgui_add_widget` | Add any of 102 widget types to a window — supports nested children for containers |
+| `imgui_update_widget` | Update a widget's value, text, checked state, color, label, or enabled state at runtime |
+| `imgui_remove_widget` | Remove a widget by ID |
+| `imgui_remove_window` | Remove a window and all its widgets |
+| `imgui_get_state` | Get the full state of every window and widget (values, clicked, changed, hovered, focused) |
+| `imgui_clear_all` | Remove all windows and widgets, reset to empty canvas |
+
+### Visual Feedback (3)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_screenshot` | Capture the current frame as BMP — agent can inspect the image to see what it built |
+| `imgui_screenshot_widget` | Capture with a specific widget's bounding box info for targeted inspection |
+| `imgui_screenshot_annotated` | Capture with widget ID overlays drawn on the image for spatial reference |
+
+### Input Simulation (7)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_click_widget` | Simulate a mouse click on any widget (finds its rect center, injects click events) |
+| `imgui_type_text` | Focus a widget and type text into it character by character |
+| `imgui_hover_widget` | Move the virtual mouse to hover over a widget (triggers tooltips, highlights) |
+| `imgui_scroll_window` | Inject mouse wheel scroll into a window |
+| `imgui_press_key` | Press any key or combo: `Enter`, `Tab`, `Escape`, `Ctrl+S`, `Shift+A`, etc. |
+| `imgui_set_mouse_pos` | Set the virtual mouse position in screen coordinates |
+| `imgui_focus_widget` | Set keyboard focus to a specific widget for the next frame |
+
+### Window & Widget Manipulation (8)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_move_window` | Move a window to new (x, y) coordinates |
+| `imgui_resize_window` | Resize a window to new (w, h) dimensions |
+| `imgui_move_widget` | Offset a widget's position via cursor offset |
+| `imgui_get_widget_rect` | Get a widget's actual rendered bounding box in pixels |
+| `imgui_get_window_rect` | Get a window's position and size |
+| `imgui_bring_to_front` | Focus and raise a window to the top |
+| `imgui_set_widget_size` | Override a widget's dimensions |
+| `imgui_get_layout` | Get all widget bounding boxes in a window as structured data |
+
+### Drawing — ImDrawList (1)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_draw` | Draw directly on a window's canvas: `line`, `rect`, `rect_filled`, `circle`, `circle_filled`, `triangle`, `triangle_filled`, `text`, `polyline`, `convex_poly_filled`, `bezier_cubic`, `bezier_quadratic` — each with points, color, thickness |
+
+### Style & Theming (7)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_set_style` | Apply a built-in theme: dark, light, or classic |
+| `imgui_set_theme` | Apply an extended theme preset: **fantasy** (gold/amber), **scifi** (cyan/teal), **retro** (terminal green), **minimal** (clean white) |
+| `imgui_set_theme_color` | Set any ImGui color by name: `WindowBg`, `Button`, `Text`, `FrameBg`, `Header`, `Border`, etc. |
+| `imgui_set_style_var` | Set any style variable: `FrameRounding`, `WindowRounding`, `ItemSpacing`, `FramePadding`, `IndentSpacing`, `ScrollbarSize`, `GrabMinSize`, etc. |
+| `imgui_push_style_color` | Push a temporary style color override |
+| `imgui_pop_style_color` | Pop pushed style colors |
+| `imgui_set_background` | Set the viewport background clear color |
+
+### Animation (3)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_animate` | Tween any widget property (value, opacity, size, position) over time with easing: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `bounce`, `elastic`, `back` — supports loop/ping-pong |
+| `imgui_stop_animation` | Stop animations on a specific widget |
+| `imgui_stop_all_animations` | Stop all active animations |
+
+### Layout & Responsiveness (7)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_set_anchor` | Anchor a window to the viewport: `top_left`, `top_center`, `top_right`, `center_left`, `center`, `center_right`, `bottom_left`, `bottom_center`, `bottom_right` — with pixel offset |
+| `imgui_set_widget_anchor` | Anchor a widget within its window for responsive layout |
+| `imgui_set_viewport_size` | Resize the application window to exact pixel dimensions |
+| `imgui_get_viewport_size` | Get current viewport dimensions |
+| `imgui_set_resolution_preset` | Resize to a preset: `720p`, `1080p`, `1440p`, `4k`, `ultrawide` (3440×1440), `mobile` (390×844), `tablet` (1024×768) |
+| `imgui_set_dpi_scale` | Scale all UI sizes for HiDPI displays (1.0, 1.5, 2.0) |
+| `imgui_set_safe_area` | Set safe area insets (top, bottom, left, right) that anchored windows respect |
+
+### Assets & Textures (2)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_load_texture` | Load a BMP/PPM image as a GPU texture for Image/ImageButton widgets. Creates a checkerboard placeholder if file not found. |
+| `imgui_unload_texture` | Free a loaded texture's GPU resources |
+
+### Workflow — Undo/Redo & Snapshots (6)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_undo` | Undo the last add/remove/update/clear operation (50-deep stack) |
+| `imgui_redo` | Re-apply an undone operation |
+| `imgui_save_snapshot` | Save the current layout as a named snapshot |
+| `imgui_load_snapshot` | Restore a previously saved snapshot |
+| `imgui_list_snapshots` | List all snapshots with names, frame numbers, and widget counts |
+| `imgui_delete_snapshot` | Delete a snapshot by name |
+
+### Scenes & Multi-Window (7)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_create_scene` | Create a named scene that groups specific windows together |
+| `imgui_delete_scene` | Delete a scene |
+| `imgui_switch_scene` | Switch to a scene — only its windows are rendered |
+| `imgui_list_scenes` | List all scenes and the active scene |
+| `imgui_set_window_layer` | Set z-order layer for a window (higher = renders on top) |
+| `imgui_set_widget_visibility` | Set conditional visibility: `always`, `never`, `widget_id.checked==true`, `widget_id.value>0.5` |
+| `imgui_set_window_visibility` | Show or hide a window |
+
+### Export & Import (4)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_export_cpp` | Generate standalone C++ ImGui code that recreates the current layout (with static variables for state) |
+| `imgui_export_lua` | Generate Lua imgui binding code that recreates the layout |
+| `imgui_export_json` | Serialize the layout as portable JSON (windows, widgets, values, positions) |
+| `imgui_import_json` | Import a JSON layout — recreates all windows and widgets |
+
+### Debug Windows (4)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_show_demo` | Toggle the ImGui demo window (showcases every widget interactively) |
+| `imgui_show_metrics` | Toggle the metrics/debug window (draw calls, vertices, internal state) |
+| `imgui_show_about` | Toggle the about window (version, credits, build info) |
+| `imgui_show_style_editor` | Toggle the style editor (edit colors and sizes interactively) |
+
+### System & Input State (4)
+
+| Tool | Description |
+|------|-------------|
+| `imgui_app_status` | Check if the ImGui app is running, binary path, and version |
+| `imgui_get_input_state` | Query mouse position, button states, keyboard state, hovered/active/focused items |
+| `imgui_clipboard` | Get or set the system clipboard text |
+| `imgui_window_control` | Low-level window ops: set_pos, set_size, set_collapsed, set_focus, set_bg_alpha, set_scroll |
+
+---
+
+## All 102 Widget Types
+
+### Standard ImGui Widgets (91)
+
+| Category | Widget Types |
+|----------|-------------|
+| **Buttons** | `button`, `small_button`, `invisible_button`, `arrow_button`, `text_link`, `text_link_open_url` |
+| **Text** | `text`, `text_colored`, `text_disabled`, `text_wrapped`, `label_text`, `bullet_text`, `separator_text` |
+| **Input** | `input_text`, `input_text_multiline`, `input_text_with_hint`, `input_float`, `input_float2`, `input_float3`, `input_float4`, `input_int`, `input_int2`, `input_int3`, `input_int4`, `input_double` |
+| **Sliders** | `slider_float`, `slider_float2`, `slider_float3`, `slider_float4`, `slider_int`, `slider_int2`, `slider_int3`, `slider_int4`, `slider_angle`, `vslider_float`, `vslider_int` |
+| **Drag** | `drag_float`, `drag_float2`, `drag_float3`, `drag_float4`, `drag_float_range2`, `drag_int`, `drag_int2`, `drag_int3`, `drag_int4`, `drag_int_range2` |
+| **Color** | `color_edit3`, `color_edit4`, `color_picker3`, `color_picker4`, `color_button` |
+| **Combo & List** | `combo`, `listbox` |
+| **Trees** | `tree_node`, `tree_node_ex`, `collapsing_header`, `selectable` |
+| **Tables** | `table` — with headers, rows, sorting, column resize, reordering |
+| **Menus** | `menu_bar`, `main_menu_bar`, `menu`, `menu_item` — with shortcuts and checkmarks |
+| **Popups** | `popup`, `popup_modal` |
+| **Tabs** | `tab_bar`, `tab_item` — closable tabs with nested content |
+| **Containers** | `child_window` — scrollable sub-regions, `group` — layout grouping |
+| **Plots** | `plot_lines`, `plot_histogram` — with overlay text and scale control |
+| **Toggles** | `checkbox`, `checkbox_flags`, `radio_button` |
+| **Progress** | `progress_bar` — with custom overlay text |
+| **Layout** | `separator`, `same_line`, `new_line`, `spacing`, `dummy`, `indent`, `unindent`, `align_text_to_frame_padding`, `bullet` |
+| **Values** | `value_bool`, `value_int`, `value_float` |
+| **Tooltips** | `tooltip`, `set_item_tooltip` |
+| **Images** | `image`, `image_button` — with loaded textures |
+
+### Game UI Patterns (11)
+
+| Widget | What it renders |
+|--------|----------------|
+| `health_bar` | Labeled HP bar with green→yellow→red color gradient based on percentage, "HP: X/Y" overlay |
+| `mana_bar` | Blue/purple MP bar with "MP: X/Y" overlay |
+| `inventory_grid` | N×M grid of 48px slots with item labels, selected slot highlight, click events |
+| `dialogue_box` | Bordered panel with speaker name, typewriter text reveal, numbered choice buttons |
+| `minimap` | Dark bordered square with green player triangle at center, red entity dots from coordinate data |
+| `tooltip_card` | Bordered card with rarity-colored title, wrapped description, stat lines |
+| `cooldown_radial` | Circle with radial sweep showing remaining cooldown, centered label |
+| `notification_toast` | Small rounded rect with opacity fade, positioned at top-right |
+| `skill_bar` | Horizontal row of icon squares with keybind labels and cooldown overlays |
+| `quest_tracker` | Panel with colored header, quest entries with individual progress bars |
+| `character_sheet` | Tabbed panel with headers as tab names, key-value stat pairs from row data |
+
+---
+
+## Supported IDE/CLI Tools
+
+imgui-mcp ships **project-level config files** for every major AI coding tool. Clone the repo, open it in your tool, and the MCP server is already configured.
+
+| Tool | Config File | Format |
+|------|------------|--------|
+| **Claude Code** | `.mcp.json` | JSON — `mcpServers` with `${CLAUDE_PROJECT_DIR}` |
+| **Claude Desktop** | Global config | JSON — `mcpServers` (absolute path required) |
+| **Cursor** | `.cursor/mcp.json` | JSON — `mcpServers` with `${workspaceFolder}` |
+| **VS Code / Copilot** | `.vscode/mcp.json` | JSON — `servers` key with `type: "stdio"` |
+| **Windsurf** | `.windsurf/mcp.json` | JSON — `mcpServers` (relative path) |
+| **omp (Oh My Pi)** | `.omp/mcp.json` | JSON — `mcpServers` (relative path) |
+| **Cline** | `.cline/mcp.json` | JSON — `mcpServers` with `cwd` + `autoApprove` |
+| **Roo Code** | `.roo/mcp.json` | JSON — `mcpServers` with `cwd` + `alwaysAllow` |
+| **Zed** | `.zed/settings.json` | JSON — `context_servers` with flat command |
+| **Gemini CLI** | `.gemini/settings.json` | JSON — `mcpServers` (relative path) |
+| **Codex CLI** | `.codex/config.toml` | TOML — `[mcp_servers.imgui]` |
+| **Continue** | `.continue/config.yaml` | YAML — `mcpServers` as list |
+| **Augment** | Global config | JSON — `mcpServers` |
+
+Run `./setup.sh` (Linux/macOS) or `.\setup.ps1` (Windows) to also install global configs for tools that need them.
+
+---
+
+## Usage Examples
+
+### Game HUD
+
+> "Create a fantasy game HUD with health at 75%, mana at 60%, a 4×3 inventory grid, and a 5-slot skill bar."
+
 ```
-</details>
-
-<details>
-<summary><strong>Cursor</strong></summary>
-
-Add to `.cursor/mcp.json`:
-```json
-{
-  "mcpServers": {
-    "imgui": {
-      "command": "python3",
-      "args": ["/path/to/imgui-mcp/server.py"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary><strong>VS Code (GitHub Copilot)</strong></summary>
-
-Add to `.vscode/mcp.json`:
-```json
-{
-  "servers": {
-    "imgui": {
-      "type": "stdio",
-      "command": "python3",
-      "args": ["/path/to/imgui-mcp/server.py"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary><strong>omp (Oh My Pi)</strong></summary>
-
-Add to `.omp/mcp.json`:
-```json
-{
-  "mcpServers": {
-    "imgui": {
-      "command": "python3",
-      "args": ["/path/to/imgui-mcp/server.py"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary><strong>All other tools</strong></summary>
-
-Run `./setup.sh` (Linux/macOS) or `.\setup.ps1` (Windows) — it auto-configures:
-Windsurf, Gemini CLI, Codex CLI, Cline, Roo Code, Zed, Continue, Augment.
-</details>
-
-## Usage Example
-
-Once configured, just talk to your AI agent:
-
-> "Create a game HUD with a health bar at 75%, a mana bar at 60%, an inventory grid with 12 slots, and a skill bar with 5 abilities. Use the fantasy theme."
-
-The agent will call:
-```
-imgui_create_window(id="hud", title="Game HUD", w=800, h=600)
+imgui_create_window(id="hud", title="Game HUD", w=800, h=600, flags=["menubar"])
 imgui_add_widget(window="hud", id="hp", widget_type="health_bar", value=0.75)
 imgui_add_widget(window="hud", id="mp", widget_type="mana_bar", value=0.6)
-imgui_add_widget(window="hud", id="inv", widget_type="inventory_grid", ...)
-imgui_add_widget(window="hud", id="skills", widget_type="skill_bar", ...)
+imgui_add_widget(window="hud", id="inv", widget_type="inventory_grid",
+                 int_value=4, int_values=[4,3],
+                 items=["Sword","Shield","Potion","Bow","Arrow","Ring",...])
+imgui_add_widget(window="hud", id="skills", widget_type="skill_bar",
+                 int_value=5, items=["Q","W","E","R","F"],
+                 values=[0, 0.3, 0, 0.7, 1.0])
 imgui_set_theme(theme="fantasy")
-imgui_screenshot(path="/tmp/hud.bmp")
+imgui_screenshot()  ← agent sees the result and iterates
 ```
 
-Then it sees the screenshot and iterates.
+### Animated Damage Flash
+
+> "Animate the health bar dropping from 75% to 20% with a bounce effect over 2 seconds."
+
+```
+imgui_animate(window="hud", widget="hp", property="value",
+              from=0.75, to=0.2, duration=2.0, ease="bounce")
+```
+
+### Export to Game Code
+
+> "Export this layout as C++ code I can drop into my game."
+
+```
+imgui_export_cpp(path="src/game_hud.cpp")
+→ Generates a standalone render_game_hud() function with static variables
+```
+
+### Responsive Testing
+
+> "Test the HUD at 4K resolution and mobile."
+
+```
+imgui_set_resolution_preset(preset="4k")
+imgui_screenshot()
+imgui_set_resolution_preset(preset="mobile")
+imgui_screenshot()
+```
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  AI Agent (Claude, GPT, Gemini, any MCP client)     │
-└────────────────────────┬────────────────────────────┘
-                         │ MCP 2025-06-18 (JSON-RPC 2.0 / stdio)
-┌────────────────────────▼────────────────────────────┐
-│  server.py — 70 tools, zero Python dependencies     │
-└────────────────────────┬────────────────────────────┘
-                         │ JSON IPC (stdin/stdout)
-┌────────────────────────▼────────────────────────────┐
-│  imgui_mcp_app — C++17, SDL2 + OpenGL3             │
-│  Dear ImGui v1.92.8 · 102 widget types · 60 FPS    │
-└─────────────────────────────────────────────────────┘
+imgui-mcp/
+├── server.py              MCP server — 70 tools, zero Python deps
+├── src/
+│   ├── types.h            Shared enums (102 widget types), structs, globals
+│   ├── main.cpp           SDL2+OpenGL3 lifecycle, stdin reader, emit helpers
+│   ├── render.cpp         render_widget() — 102-case switch, nested containers
+│   └── commands.cpp       process_command() — all command handlers
+├── vendor/                Dear ImGui v1.92.8 (vendored, MIT)
+├── cmake/                 MinGW cross-compilation toolchain
+├── CMakeLists.txt         Cross-platform build (Linux, macOS, Windows)
+├── setup.sh               Linux/macOS installer for all 13 tools
+├── setup.ps1              Windows installer for all 13 tools
+├── demo.py                Full feature demonstration script
+├── .mcp.json              Claude Code config
+├── .cursor/mcp.json       Cursor config
+├── .vscode/mcp.json       VS Code / Copilot config
+├── .windsurf/mcp.json     Windsurf config
+├── .omp/mcp.json          omp config
+├── .cline/mcp.json        Cline config
+├── .roo/mcp.json          Roo Code config
+├── .zed/settings.json     Zed config
+├── .gemini/settings.json  Gemini CLI config
+├── .codex/config.toml     Codex CLI config
+└── .continue/config.yaml  Continue config
 ```
 
-## Tool Reference
+**Wire protocol:** MCP 2025-06-18 · JSON-RPC 2.0 · stdio transport · newline-delimited
 
-<details>
-<summary><strong>All 70 MCP Tools</strong></summary>
-
-**Windows & Widgets:** `imgui_create_window` · `imgui_add_widget` · `imgui_update_widget` · `imgui_remove_widget` · `imgui_remove_window` · `imgui_get_state` · `imgui_clear_all`
-
-**Visual Feedback:** `imgui_screenshot` · `imgui_screenshot_widget` · `imgui_screenshot_annotated`
-
-**Manipulation:** `imgui_move_window` · `imgui_resize_window` · `imgui_move_widget` · `imgui_get_widget_rect` · `imgui_get_window_rect` · `imgui_bring_to_front` · `imgui_set_widget_size` · `imgui_get_layout`
-
-**Input Simulation:** `imgui_click_widget` · `imgui_type_text` · `imgui_hover_widget` · `imgui_scroll_window` · `imgui_press_key` · `imgui_set_mouse_pos` · `imgui_focus_widget`
-
-**Drawing:** `imgui_draw` (line, rect, circle, triangle, bezier, polyline, text)
-
-**Style & Theming:** `imgui_set_style` · `imgui_set_theme` · `imgui_set_theme_color` · `imgui_set_style_var` · `imgui_push_style_color` · `imgui_pop_style_color` · `imgui_set_background`
-
-**Animation:** `imgui_animate` · `imgui_stop_animation` · `imgui_stop_all_animations`
-
-**Layout:** `imgui_set_anchor` · `imgui_set_widget_anchor` · `imgui_set_viewport_size` · `imgui_get_viewport_size` · `imgui_set_resolution_preset` · `imgui_set_dpi_scale` · `imgui_set_safe_area`
-
-**Assets:** `imgui_load_texture` · `imgui_unload_texture`
-
-**Workflow:** `imgui_undo` · `imgui_redo` · `imgui_save_snapshot` · `imgui_load_snapshot` · `imgui_list_snapshots` · `imgui_delete_snapshot`
-
-**Scenes:** `imgui_create_scene` · `imgui_delete_scene` · `imgui_switch_scene` · `imgui_list_scenes` · `imgui_set_window_layer` · `imgui_set_widget_visibility` · `imgui_set_window_visibility`
-
-**Export:** `imgui_export_cpp` · `imgui_export_lua` · `imgui_export_json` · `imgui_import_json`
-
-**Debug:** `imgui_show_demo` · `imgui_show_metrics` · `imgui_show_about` · `imgui_show_style_editor`
-
-**System:** `imgui_app_status` · `imgui_get_input_state` · `imgui_clipboard` · `imgui_window_control`
-
-</details>
-
-## Widget Types (102)
-
-<details>
-<summary><strong>Full list</strong></summary>
-
-**Buttons:** button, small_button, invisible_button, arrow_button, text_link, text_link_open_url
-
-**Text:** text, text_colored, text_disabled, text_wrapped, label_text, bullet_text, separator_text
-
-**Input:** input_text, input_text_multiline, input_text_with_hint, input_float/2/3/4, input_int/2/3/4, input_double
-
-**Sliders:** slider_float/2/3/4, slider_int/2/3/4, slider_angle, vslider_float, vslider_int
-
-**Drag:** drag_float/2/3/4, drag_float_range2, drag_int/2/3/4, drag_int_range2
-
-**Color:** color_edit3/4, color_picker3/4, color_button
-
-**Combo/List:** combo, listbox
-
-**Trees:** tree_node, tree_node_ex, collapsing_header, selectable
-
-**Tables:** table (with headers, rows, sorting, resize, reorder)
-
-**Menus:** menu_bar, main_menu_bar, menu, menu_item
-
-**Popups:** popup, popup_modal
-
-**Tabs:** tab_bar, tab_item
-
-**Containers:** child_window, group
-
-**Plots:** plot_lines, plot_histogram
-
-**Layout:** separator, same_line, new_line, spacing, dummy, indent, unindent, align_text_to_frame_padding, bullet
-
-**Game Patterns:** health_bar, mana_bar, inventory_grid, dialogue_box, minimap, tooltip_card, cooldown_radial, notification_toast, skill_bar, quest_tracker, character_sheet
-
-**Misc:** progress_bar, checkbox, checkbox_flags, radio_button, value_bool, value_int, value_float, tooltip, image, image_button, draw_list
-
-</details>
+---
 
 ## Building from Source
 
 ```bash
 # Linux / macOS
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
 
 # Windows (MSVC + vcpkg)
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=[vcpkg]/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release
 
-# Windows (cross-compile from Linux with MinGW)
+# Windows (cross-compile from Linux)
 cmake -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake
 cmake --build build-win
 ```
 
-## Releases
+Requirements: CMake 3.16+, C++17 compiler, SDL2, OpenGL
 
-Pre-built binaries for **Linux x64** and **Windows x64** are available in [Releases](https://github.com/SaloQT/imgui-mcp/releases).
+---
 
 ## License
 
-MIT. Dear ImGui is vendored under its own MIT license.
+MIT — see [LICENSE](LICENSE). Dear ImGui is vendored under its own [MIT license](vendor/LICENSE.txt).
 
 ---
 
 <p align="center">
-  <sub>Built for AI agents that need eyes. Made with Dear ImGui v1.92.8.</sub>
+  <sub>Built for AI agents that need eyes. Powered by Dear ImGui v1.92.8 + SDL2 + OpenGL.</sub><br>
+  <sub>Works with Claude · Cursor · VS Code · Windsurf · omp · Zed · Gemini CLI · Codex · Cline · Roo Code · Continue · Augment</sub>
 </p>
