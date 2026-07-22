@@ -33,9 +33,34 @@ SERVER_NAME = "imgui-mcp"
 SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2025-06-18"
 
-# Find the imgui_mcp_app binary relative to this script
+# Auto-detect the imgui_mcp_app binary location
 SCRIPT_DIR = Path(__file__).parent.resolve()
-APP_BINARY = SCRIPT_DIR / "build" / "imgui_mcp_app"
+_IS_WINDOWS = sys.platform == "win32"
+_EXE = ".exe" if _IS_WINDOWS else ""
+
+def _find_binary() -> Path:
+    """Search for the imgui_mcp_app binary in known locations.
+    Handles: release packages (bin/), source builds (build/),
+    MSVC builds (build/Release/), cross-compiles (build-win/),
+    and Windows .exe extension."""
+    candidates = [
+        SCRIPT_DIR / "bin" / f"imgui_mcp_app{_EXE}",           # release package
+        SCRIPT_DIR / "build" / f"imgui_mcp_app{_EXE}",         # cmake source build
+        SCRIPT_DIR / "build" / "Release" / f"imgui_mcp_app{_EXE}",  # MSVC multi-config
+        SCRIPT_DIR / "build-win" / f"imgui_mcp_app.exe",       # cross-compiled
+        SCRIPT_DIR / "imgui_mcp_app{_EXE}",                    # same dir as server.py
+    ]
+    # On Windows, also try without .exe in case of WSL
+    if _IS_WINDOWS:
+        candidates.append(SCRIPT_DIR / "bin" / "imgui_mcp_app")
+        candidates.append(SCRIPT_DIR / "build" / "imgui_mcp_app")
+    for p in candidates:
+        if p.is_file():
+            return p
+    # Fallback: return the most likely path for error messages
+    return SCRIPT_DIR / "bin" / f"imgui_mcp_app{_EXE}"
+
+APP_BINARY = _find_binary()
 
 # ─── Logging (stderr only) ──────────────────────────────────────────────────
 
@@ -59,8 +84,11 @@ class ImGuiApp:
         """Start the imgui application."""
         binary = str(APP_BINARY)
         if not os.path.isfile(binary):
-            log(f"ERROR: Binary not found at {binary}")
-            log("Run: cd <project> && mkdir -p build && cd build && cmake .. && make")
+            log(f"ERROR: Binary not found. Searched:")
+            log(f"  bin/imgui_mcp_app{_EXE}  (release package)")
+            log(f"  build/imgui_mcp_app{_EXE}  (source build)")
+            log(f"  build/Release/imgui_mcp_app{_EXE}  (MSVC)")
+            log(f"To build from source: mkdir build && cd build && cmake .. && make")
             return False
 
         log(f"Starting imgui app: {binary}")
