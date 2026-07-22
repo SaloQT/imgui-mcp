@@ -8,14 +8,26 @@
 #include <SDL2/SDL.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
+#include <utility>
 #include <fstream>
+#include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <cmath>
 #include <cstdint>
 #include <GL/gl.h>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 // ─── Widget type parsing ────────────────────────────────────────────────────
 
@@ -125,6 +137,149 @@ WidgetType parse_widget_type(const std::string& s) {
     return WidgetType::Text; // fallback for unknown widget types
 }
 
+enum class NumericFormatKind { None, Float, Integer };
+
+static constexpr size_t MAX_NUMERIC_FORMAT_BYTES = 128;
+static constexpr size_t MAX_NUMERIC_FIELD_WIDTH = 1024;
+static constexpr size_t MAX_NUMERIC_PRECISION = 64;
+static constexpr size_t MAX_LAYOUT_WINDOWS = 256;
+static constexpr size_t MAX_LAYOUT_WIDGETS = 4096;
+static constexpr size_t MAX_WIDGET_NESTING = 32;
+static constexpr size_t MAX_STATE_STRING_BYTES = 8u * 1024u * 1024u;
+static constexpr size_t MAX_SINGLE_STATE_STRING_BYTES = 4u * 1024u * 1024u;
+static constexpr size_t MAX_SERIALIZED_STATE_BYTES = 16u * 1024u * 1024u;
+static constexpr size_t MAX_HISTORY_BYTES = 64u * 1024u * 1024u;
+static constexpr size_t MAX_SNAPSHOT_BYTES = 64u * 1024u * 1024u;
+static constexpr size_t MAX_SNAPSHOTS = 64;
+static constexpr size_t MAX_SNAPSHOT_NAME_BYTES = 256;
+static constexpr size_t MAX_IMPORT_FILE_BYTES = 4u * 1024u * 1024u;
+static constexpr size_t MAX_WIDGET_ITEMS = 1024;
+static constexpr size_t MAX_PLOT_VALUES = 4096;
+static constexpr size_t MAX_TABLE_HEADERS = 64;
+static constexpr size_t MAX_TABLE_ROWS = 1024;
+static constexpr size_t MAX_TABLE_CELLS = 16384;
+static constexpr int MAX_TABLE_COLUMNS = 64;
+static constexpr size_t MAX_DRAW_COMMANDS = 1024;
+static constexpr size_t MAX_DRAW_POINTS = 4;
+static constexpr int MAX_DRAW_SEGMENTS = 256;
+static constexpr int MAX_INVENTORY_DIMENSION = 64;
+static constexpr size_t MAX_INVENTORY_CELLS = 4096;
+static constexpr int MAX_SKILL_SLOTS = 64;
+static constexpr size_t MAX_LAYOUT_ITEMS = 16384;
+static constexpr size_t MAX_LAYOUT_PLOT_VALUES = 65536;
+static constexpr size_t MAX_LAYOUT_TABLE_HEADERS = 1024;
+static constexpr size_t MAX_LAYOUT_TABLE_ROWS = 4096;
+static constexpr size_t MAX_LAYOUT_TABLE_CELLS = 65536;
+static constexpr size_t MAX_LAYOUT_DRAW_COMMANDS = 4096;
+static constexpr size_t MAX_LAYOUT_INVENTORY_CELLS = 16384;
+static constexpr size_t MAX_LAYOUT_SKILL_SLOTS = 4096;
+static constexpr int MAX_JSON_NESTING_DEPTH = 64;
+
+static NumericFormatKind numeric_format_kind(WidgetType type) {
+    switch (type) {
+    case WidgetType::InputFloat:
+    case WidgetType::InputFloat2:
+    case WidgetType::InputFloat3:
+    case WidgetType::InputFloat4:
+    case WidgetType::InputDouble:
+    case WidgetType::SliderFloat:
+    case WidgetType::SliderFloat2:
+    case WidgetType::SliderFloat3:
+    case WidgetType::SliderFloat4:
+    case WidgetType::SliderAngle:
+    case WidgetType::VSliderFloat:
+    case WidgetType::DragFloat:
+    case WidgetType::DragFloat2:
+    case WidgetType::DragFloat3:
+    case WidgetType::DragFloat4:
+    case WidgetType::DragFloatRange2:
+    case WidgetType::ValueFloat:
+        return NumericFormatKind::Float;
+    case WidgetType::SliderInt:
+    case WidgetType::SliderInt2:
+    case WidgetType::SliderInt3:
+    case WidgetType::SliderInt4:
+    case WidgetType::VSliderInt:
+    case WidgetType::DragInt:
+    case WidgetType::DragInt2:
+    case WidgetType::DragInt3:
+    case WidgetType::DragInt4:
+    case WidgetType::DragIntRange2:
+        return NumericFormatKind::Integer;
+    default:
+        return NumericFormatKind::None;
+    }
+}
+
+static bool consume_bounded_decimal(const std::string& value, size_t& offset,
+                                    size_t maximum) {
+    size_t parsed = 0;
+    while (offset < value.size() &&
+           std::isdigit(static_cast<unsigned char>(value[offset]))) {
+        const size_t digit = static_cast<size_t>(value[offset] - '0');
+        if (parsed > (maximum - digit) / 10)
+            return false;
+        parsed = parsed * 10 + digit;
+        ++offset;
+    }
+    return true;
+}
+
+static bool is_safe_numeric_format(const std::string& format, NumericFormatKind kind) {
+    if (format.empty() || kind == NumericFormatKind::None)
+        return true;
+    if (format.size() > MAX_NUMERIC_FORMAT_BYTES)
+        return false;
+
+    const std::string conversions = kind == NumericFormatKind::Float
+        ? "aAeEfFgG" : "diuoxX";
+    int conversion_count = 0;
+    for (size_t i = 0; i < format.size(); ++i) {
+        if (format[i] != '%')
+            continue;
+        if (i + 1 < format.size() && format[i + 1] == '%') {
+            ++i;
+            continue;
+        }
+
+        ++i;
+        while (i < format.size() && std::strchr("-+ #0", format[i]))
+            ++i;
+        if (i < format.size() && format[i] == '*')
+            return false;
+        if (!consume_bounded_decimal(format, i, MAX_NUMERIC_FIELD_WIDTH))
+            return false;
+        if (i < format.size() && format[i] == '.') {
+            ++i;
+            if (i < format.size() && format[i] == '*')
+                return false;
+            if (!consume_bounded_decimal(format, i, MAX_NUMERIC_PRECISION))
+                return false;
+        }
+        if (i >= format.size() || conversions.find(format[i]) == std::string::npos)
+            return false;
+        ++conversion_count;
+    }
+    return conversion_count == 1;
+}
+
+bool is_safe_widget_format(const Widget& widget) {
+    return is_safe_numeric_format(widget.format, numeric_format_kind(widget.type));
+}
+
+static void validate_widget_format(const Widget& widget) {
+    const NumericFormatKind kind = numeric_format_kind(widget.type);
+    if (!widget.format.empty() && kind != NumericFormatKind::None &&
+        !is_safe_widget_format(widget)) {
+        throw std::invalid_argument(
+            kind == NumericFormatKind::Float
+                ? "format must contain exactly one floating-point conversion "
+                  "(max 128 bytes, width 1024, precision 64)"
+                : "format must contain exactly one integer conversion "
+                  "(max 128 bytes, width 1024, precision 64)");
+    }
+}
+
 // ─── Style index parsing ────────────────────────────────────────────────────
 
 // Normalize a style name: lowercase, CamelCase → snake_case, strip any
@@ -156,7 +311,10 @@ static std::string norm_style_name(const std::string& in) {
 // Returns -1 for unknown names. Accepts an int or a string (with or without
 // the ImGuiCol_ prefix, CamelCase or snake_case).
 static int parse_style_color_index(const json& v) {
-    if (v.is_number_integer()) return v.get<int>();
+    if (v.is_number_integer()) {
+        const int index = v.get<int>();
+        return index >= 0 && index < ImGuiCol_COUNT ? index : -1;
+    }
     if (!v.is_string()) return -1;
 
     static const std::map<std::string, int> names = {
@@ -229,7 +387,10 @@ static int parse_style_color_index(const json& v) {
 // Returns -1 for unknown names. Accepts an int or a string (with or without
 // the ImGuiStyleVar_ prefix, CamelCase or snake_case).
 static int parse_style_var_index(const json& v) {
-    if (v.is_number_integer()) return v.get<int>();
+    if (v.is_number_integer()) {
+        const int index = v.get<int>();
+        return index >= 0 && index < ImGuiStyleVar_COUNT ? index : -1;
+    }
     if (!v.is_string()) return -1;
 
     static const std::map<std::string, int> names = {
@@ -280,13 +441,39 @@ static int parse_style_var_index(const json& v) {
     return it == names.end() ? -1 : it->second;
 }
 
+static bool style_var_is_vec2(int index) {
+    switch (index) {
+    case ImGuiStyleVar_WindowPadding:
+    case ImGuiStyleVar_WindowMinSize:
+    case ImGuiStyleVar_WindowTitleAlign:
+    case ImGuiStyleVar_FramePadding:
+    case ImGuiStyleVar_ItemSpacing:
+    case ImGuiStyleVar_ItemInnerSpacing:
+    case ImGuiStyleVar_CellPadding:
+    case ImGuiStyleVar_TableAngledHeadersTextAlign:
+    case ImGuiStyleVar_ButtonTextAlign:
+    case ImGuiStyleVar_SelectableTextAlign:
+    case ImGuiStyleVar_SeparatorTextAlign:
+    case ImGuiStyleVar_SeparatorTextPadding:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static int g_style_color_depth = 0;
+static int g_style_var_depth = 0;
+static float g_dpi_scale = 1.0f;
+
 // ─── Widget JSON parsing ────────────────────────────────────────────────────
 
-Widget parse_widget_json(const json& j); // forward decl (defined below)
+static Widget parse_widget_json_at_depth(const json& j, size_t depth,
+                                         size_t& widget_count);
 
 // Apply every optional field present in `j` onto widget `w`. Used both when
 // creating a widget (add_widget) and when patching one (update_widget).
-static void apply_widget_fields(Widget& w, const json& j) {
+static void apply_widget_fields(Widget& w, const json& j, size_t depth = 1,
+                                size_t* parsed_widget_count = nullptr) {
     // String fields
     if (j.contains("label") && j["label"].is_string()) w.label = j["label"].get<std::string>();
     if (j.contains("content") && j["content"].is_string()) w.content = j["content"].get<std::string>();
@@ -310,6 +497,8 @@ static void apply_widget_fields(Widget& w, const json& j) {
     // values: array -> float_val[0..3] plus full plot data
     if (j.contains("values") && j["values"].is_array()) {
         const json& v = j["values"];
+        if (v.size() > MAX_PLOT_VALUES)
+            throw std::length_error("plot value count exceeds the limit of 4096");
         for (int i = 0; i < 4 && i < (int)v.size(); i++)
             w.float_val[i] = v[i].get<float>();
         w.plot_values.clear();
@@ -361,6 +550,8 @@ static void apply_widget_fields(Widget& w, const json& j) {
 
     // items[]
     if (j.contains("items") && j["items"].is_array()) {
+        if (j["items"].size() > MAX_WIDGET_ITEMS)
+            throw std::length_error("widget item count exceeds the limit of 1024");
         w.items.clear();
         for (const auto& it : j["items"])
             w.items.push_back(it.get<std::string>());
@@ -383,6 +574,8 @@ static void apply_widget_fields(Widget& w, const json& j) {
 
     // headers[]
     if (j.contains("headers") && j["headers"].is_array()) {
+        if (j["headers"].size() > MAX_TABLE_HEADERS)
+            throw std::length_error("table header count exceeds the limit of 64");
         w.headers.clear();
         for (const auto& h : j["headers"])
             w.headers.push_back(h.get<std::string>());
@@ -390,10 +583,16 @@ static void apply_widget_fields(Widget& w, const json& j) {
 
     // rows[][]
     if (j.contains("rows") && j["rows"].is_array()) {
+        if (j["rows"].size() > MAX_TABLE_ROWS)
+            throw std::length_error("table row count exceeds the limit of 1024");
         w.rows.clear();
+        size_t cell_count = 0;
         for (const auto& r : j["rows"]) {
             std::vector<std::string> row;
             if (r.is_array()) {
+                if (r.size() > MAX_TABLE_CELLS - cell_count)
+                    throw std::length_error("table cell count exceeds the limit of 16384");
+                cell_count += r.size();
                 for (const auto& cell : r) {
                     if (cell.is_string()) row.push_back(cell.get<std::string>());
                     else row.push_back(cell.dump());
@@ -406,8 +605,12 @@ static void apply_widget_fields(Widget& w, const json& j) {
     // children[] (recursive)
     if (j.contains("children") && j["children"].is_array()) {
         w.children.clear();
+        size_t local_widget_count = 1;
+        size_t& widget_count = parsed_widget_count
+            ? *parsed_widget_count : local_widget_count;
         for (const auto& c : j["children"])
-            w.children.push_back(parse_widget_json(c));
+            w.children.push_back(parse_widget_json_at_depth(c, depth + 1,
+                                                             widget_count));
     }
 
     if (j.contains("open") && j["open"].is_boolean()) w.tree_open = j["open"].get<bool>();
@@ -416,13 +619,26 @@ static void apply_widget_fields(Widget& w, const json& j) {
 
 // Parse a full widget definition from JSON (used by add_widget and the
 // recursive "children" arrays).
-Widget parse_widget_json(const json& j) {
+static Widget parse_widget_json_at_depth(const json& j, size_t depth,
+                                         size_t& widget_count) {
+    if (depth > MAX_WIDGET_NESTING)
+        throw std::length_error("widget nesting exceeds the limit of 32");
+    if (widget_count >= MAX_LAYOUT_WIDGETS)
+        throw std::length_error("widget count exceeds the limit of 4096");
+    ++widget_count;
+
     Widget w;
     w.id = j.value("id", "");
     w.type = parse_widget_type(j.value("widget_type", "text"));
     w.label = j.value("label", w.id);
-    apply_widget_fields(w, j);
+    apply_widget_fields(w, j, depth, &widget_count);
+    validate_widget_format(w);
     return w;
+}
+
+Widget parse_widget_json(const json& j) {
+    size_t widget_count = 0;
+    return parse_widget_json_at_depth(j, 1, widget_count);
 }
 
 // ─── Recursive widget lookup ────────────────────────────────────────────────
@@ -460,7 +676,7 @@ static int parse_draw_type(const json& v) {
     if (s == "triangle") return 5;
     if (s == "triangle_filled") return 6;
     if (s == "polyline") return 7;
-    if (s == "convex_poly_filled") return 8;
+    if (s == "convex_poly_filled" || s == "convex_poly") return 8;
     if (s == "quad") return 9;
     if (s == "quad_filled") return 10;
     if (s == "text") return 11;
@@ -489,6 +705,8 @@ static DrawCommand parse_draw_command(const json& j) {
     // "points": array of [x, y] pairs, fills p1..p4 (as many as available)
     if (j.contains("points") && j["points"].is_array()) {
         const json& pts = j["points"];
+        if (pts.size() > MAX_DRAW_POINTS)
+            throw std::length_error("draw point count exceeds the limit of 4");
         float* dst[4] = {dc.p1, dc.p2, dc.p3, dc.p4};
         for (int i = 0; i < 4 && i < (int)pts.size(); i++) {
             if (pts[i].is_array() && pts[i].size() >= 2) {
@@ -726,6 +944,8 @@ static std::string widget_type_to_string(WidgetType t) {
         case WidgetType::SkillBar: return "skill_bar";
         case WidgetType::QuestTracker: return "quest_tracker";
         case WidgetType::CharacterSheet: return "character_sheet";
+        case WidgetType::Image: return "image";
+        case WidgetType::ImageButton: return "image_button";
     }
     return "text";
 }
@@ -796,7 +1016,14 @@ static json serialize_widget_full(const Widget& w) {
 }
 
 // Deserialize a widget from its full serialization (inverse of serialize_widget_full).
-static Widget deserialize_widget_full(const json& j) {
+static Widget deserialize_widget_full_at_depth(const json& j, size_t depth,
+                                               size_t& widget_count) {
+    if (depth > MAX_WIDGET_NESTING)
+        throw std::length_error("widget nesting exceeds the limit of 32");
+    if (widget_count >= MAX_LAYOUT_WIDGETS)
+        throw std::length_error("widget count exceeds the limit of 4096");
+    ++widget_count;
+
     Widget w;
     w.id = j.value("id", "");
     w.type = parse_widget_type(j.value("widget_type", "text"));
@@ -832,29 +1059,42 @@ static Widget deserialize_widget_full(const json& j) {
             w.color[i] = j["color"][i].get<float>();
     }
     if (j.contains("items") && j["items"].is_array()) {
+        if (j["items"].size() > MAX_WIDGET_ITEMS)
+            throw std::length_error("widget item count exceeds the limit of 1024");
         w.items.clear();
         for (const auto& it : j["items"])
             w.items.push_back(it.get<std::string>());
     }
     w.selected = j.value("selected", -1);
     if (j.contains("plot_values") && j["plot_values"].is_array()) {
+        if (j["plot_values"].size() > MAX_PLOT_VALUES)
+            throw std::length_error("plot value count exceeds the limit of 4096");
         w.plot_values.clear();
         for (const auto& v : j["plot_values"])
             w.plot_values.push_back(v.get<float>());
     }
     w.columns = j.value("columns", 0);
     if (j.contains("headers") && j["headers"].is_array()) {
+        if (j["headers"].size() > MAX_TABLE_HEADERS)
+            throw std::length_error("table header count exceeds the limit of 64");
         w.headers.clear();
         for (const auto& h : j["headers"])
             w.headers.push_back(h.get<std::string>());
     }
     if (j.contains("rows") && j["rows"].is_array()) {
+        if (j["rows"].size() > MAX_TABLE_ROWS)
+            throw std::length_error("table row count exceeds the limit of 1024");
         w.rows.clear();
+        size_t cell_count = 0;
         for (const auto& r : j["rows"]) {
             std::vector<std::string> row;
-            if (r.is_array())
+            if (r.is_array()) {
+                if (r.size() > MAX_TABLE_CELLS - cell_count)
+                    throw std::length_error("table cell count exceeds the limit of 16384");
+                cell_count += r.size();
                 for (const auto& cell : r)
                     row.push_back(cell.is_string() ? cell.get<std::string>() : cell.dump());
+            }
             w.rows.push_back(std::move(row));
         }
     }
@@ -876,9 +1116,12 @@ static Widget deserialize_widget_full(const json& j) {
     if (j.contains("children") && j["children"].is_array()) {
         w.children.clear();
         for (const auto& c : j["children"])
-            w.children.push_back(deserialize_widget_full(c));
+            w.children.push_back(deserialize_widget_full_at_depth(
+                c, depth + 1, widget_count));
     }
     if (j.contains("draw_commands") && j["draw_commands"].is_array()) {
+        if (j["draw_commands"].size() > MAX_DRAW_COMMANDS)
+            throw std::length_error("draw command count exceeds the limit of 1024");
         w.draw_commands.clear();
         for (const auto& dj : j["draw_commands"]) {
             DrawCommand dc;
@@ -895,16 +1138,180 @@ static Widget deserialize_widget_full(const json& j) {
             w.draw_commands.push_back(dc);
         }
     }
+    validate_widget_format(w);
     return w;
 }
 
+struct StateUsage {
+    size_t widget_count = 0;
+    size_t string_bytes = 0;
+    size_t item_count = 0;
+    size_t plot_value_count = 0;
+    size_t table_header_count = 0;
+    size_t table_row_count = 0;
+    size_t table_cell_count = 0;
+    size_t draw_command_count = 0;
+    size_t inventory_cell_count = 0;
+    size_t skill_slot_count = 0;
+};
+
+static void account_state_string(StateUsage& usage, const std::string& value) {
+    if (value.size() > MAX_SINGLE_STATE_STRING_BYTES)
+        throw std::length_error("state string exceeds the 4 MiB limit");
+    if (value.size() > MAX_STATE_STRING_BYTES - usage.string_bytes)
+        throw std::length_error("aggregate state strings exceed the 8 MiB limit");
+    usage.string_bytes += value.size();
+}
+
+static void account_state_elements(size_t count, size_t per_widget_limit,
+                                   size_t& aggregate, size_t aggregate_limit,
+                                   const char* per_widget_error,
+                                   const char* aggregate_error) {
+    if (count > per_widget_limit)
+        throw std::length_error(per_widget_error);
+    if (count > aggregate_limit - aggregate)
+        throw std::length_error(aggregate_error);
+    aggregate += count;
+}
+
+static void measure_widget_state(const Widget& widget, size_t depth,
+                                 StateUsage& usage) {
+    if (depth > MAX_WIDGET_NESTING)
+        throw std::length_error("widget nesting exceeds the limit of 32");
+    if (usage.widget_count >= MAX_LAYOUT_WIDGETS)
+        throw std::length_error("widget count exceeds the limit of 4096");
+    ++usage.widget_count;
+
+    account_state_elements(
+        widget.items.size(), MAX_WIDGET_ITEMS, usage.item_count, MAX_LAYOUT_ITEMS,
+        "widget item count exceeds the limit of 1024",
+        "aggregate widget item count exceeds the limit of 16384");
+    account_state_elements(
+        widget.plot_values.size(), MAX_PLOT_VALUES, usage.plot_value_count,
+        MAX_LAYOUT_PLOT_VALUES,
+        "plot value count exceeds the limit of 4096",
+        "aggregate plot value count exceeds the limit of 65536");
+    account_state_elements(
+        widget.headers.size(), MAX_TABLE_HEADERS, usage.table_header_count,
+        MAX_LAYOUT_TABLE_HEADERS,
+        "table header count exceeds the limit of 64",
+        "aggregate table header count exceeds the limit of 1024");
+    account_state_elements(
+        widget.rows.size(), MAX_TABLE_ROWS, usage.table_row_count,
+        MAX_LAYOUT_TABLE_ROWS,
+        "table row count exceeds the limit of 1024",
+        "aggregate table row count exceeds the limit of 4096");
+
+    size_t widget_cell_count = 0;
+    for (const auto& row : widget.rows) {
+        if (row.size() > MAX_TABLE_CELLS - widget_cell_count)
+            throw std::length_error("table cell count exceeds the limit of 16384");
+        widget_cell_count += row.size();
+    }
+    account_state_elements(
+        widget_cell_count, MAX_TABLE_CELLS, usage.table_cell_count,
+        MAX_LAYOUT_TABLE_CELLS,
+        "table cell count exceeds the limit of 16384",
+        "aggregate table cell count exceeds the limit of 65536");
+
+    if (widget.columns > MAX_TABLE_COLUMNS)
+        throw std::length_error("table column count exceeds the limit of 64");
+    account_state_elements(
+        widget.draw_commands.size(), MAX_DRAW_COMMANDS,
+        usage.draw_command_count, MAX_LAYOUT_DRAW_COMMANDS,
+        "draw command count exceeds the limit of 1024",
+        "aggregate draw command count exceeds the limit of 4096");
+    for (const auto& command : widget.draw_commands) {
+        if (command.num_segments < 0)
+            throw std::length_error("draw segment count cannot be negative");
+        if (command.num_segments > MAX_DRAW_SEGMENTS)
+            throw std::length_error("draw segment count exceeds the limit of 256");
+    }
+
+    if (widget.type == WidgetType::InventoryGrid) {
+        const int columns = widget.int_val[0] > 0 ? widget.int_val[0] : 4;
+        const int rows = widget.int_val[1] > 0 ? widget.int_val[1] : 4;
+        if (columns > MAX_INVENTORY_DIMENSION ||
+            rows > MAX_INVENTORY_DIMENSION ||
+            static_cast<size_t>(columns) * static_cast<size_t>(rows) >
+                MAX_INVENTORY_CELLS) {
+            throw std::length_error(
+                "inventory_grid dimensions exceed the limit of 64 columns, "
+                "64 rows, or 4096 cells");
+        }
+        account_state_elements(
+            static_cast<size_t>(columns) * static_cast<size_t>(rows),
+            MAX_INVENTORY_CELLS, usage.inventory_cell_count,
+            MAX_LAYOUT_INVENTORY_CELLS,
+            "inventory_grid cell count exceeds the limit of 4096",
+            "aggregate inventory_grid cell count exceeds the limit of 16384");
+    }
+    if (widget.type == WidgetType::SkillBar) {
+        const int slots = widget.int_val[0] > 0 ? widget.int_val[0] : 4;
+        if (slots > MAX_SKILL_SLOTS)
+            throw std::length_error("skill_bar count exceeds the limit of 64");
+        account_state_elements(
+            static_cast<size_t>(slots), MAX_SKILL_SLOTS,
+            usage.skill_slot_count, MAX_LAYOUT_SKILL_SLOTS,
+            "skill_bar count exceeds the limit of 64",
+            "aggregate skill_bar slot count exceeds the limit of 4096");
+    }
+
+    account_state_string(usage, widget.id);
+    account_state_string(usage, widget.label);
+    account_state_string(usage, widget.content);
+    account_state_string(usage, widget.hint);
+    account_state_string(usage, widget.tooltip);
+    account_state_string(usage, widget.shortcut);
+    account_state_string(usage, widget.overlay);
+    account_state_string(usage, widget.format);
+    account_state_string(usage, std::string(widget.text_buf));
+    account_state_string(usage, widget.visible_condition);
+    for (const auto& item : widget.items)
+        account_state_string(usage, item);
+    for (const auto& header : widget.headers)
+        account_state_string(usage, header);
+    for (const auto& row : widget.rows)
+        for (const auto& cell : row)
+            account_state_string(usage, cell);
+    for (const auto& command : widget.draw_commands)
+        account_state_string(usage, command.text);
+    for (const auto& child : widget.children)
+        measure_widget_state(child, depth + 1, usage);
+}
+
+static void validate_state_structure(
+    const std::map<std::string, WindowState>& windows,
+    const std::vector<std::string>& window_order) {
+    if (windows.size() > MAX_LAYOUT_WINDOWS ||
+        window_order.size() > MAX_LAYOUT_WINDOWS) {
+        throw std::length_error("window count exceeds the limit of 256");
+    }
+
+    StateUsage usage;
+    for (const auto& id : window_order)
+        account_state_string(usage, id);
+    for (const auto& [window_key, window] : windows) {
+        account_state_string(usage, window_key);
+        account_state_string(usage, window.id);
+        account_state_string(usage, window.title);
+        for (const auto& id : window.widget_order)
+            account_state_string(usage, id);
+        for (const auto& [widget_key, widget] : window.widgets) {
+            account_state_string(usage, widget_key);
+            measure_widget_state(widget, 1, usage);
+        }
+    }
+}
+
 // Serialize the entire layout state (all windows and widgets).
-// Caller MUST hold g_mutex.
-static json serialize_state() {
+static json serialize_state_unchecked(
+    const std::map<std::string, WindowState>& windows,
+    const std::vector<std::string>& window_order) {
     json state = json::object();
-    state["window_order"] = g_window_order;
+    state["window_order"] = window_order;
     state["windows"] = json::object();
-    for (auto& [wid, win] : g_windows) {
+    for (const auto& [wid, win] : windows) {
         json wj;
         wj["id"] = win.id;
         wj["title"] = win.title;
@@ -918,23 +1325,49 @@ static json serialize_state() {
         wj["has_menubar"] = win.has_menubar;
         wj["widget_order"] = win.widget_order;
         wj["widgets"] = json::object();
-        for (auto& [gid, w] : win.widgets)
+        for (const auto& [gid, w] : win.widgets)
             wj["widgets"][gid] = serialize_widget_full(w);
         state["windows"][wid] = wj;
     }
     return state;
 }
 
+static json serialize_validated_state(
+    const std::map<std::string, WindowState>& windows,
+    const std::vector<std::string>& window_order) {
+    validate_state_structure(windows, window_order);
+    json state = serialize_state_unchecked(windows, window_order);
+    if (state.dump().size() > MAX_SERIALIZED_STATE_BYTES)
+        throw std::length_error("serialized state exceeds the 16 MiB limit");
+    return state;
+}
+
+static void validate_state_limits(
+    const std::map<std::string, WindowState>& windows,
+    const std::vector<std::string>& window_order) {
+    (void)serialize_validated_state(windows, window_order);
+}
+
+// Caller MUST hold g_mutex.
+static json serialize_state() {
+    return serialize_validated_state(g_windows, g_window_order);
+}
+
 // Restore the entire layout state from a serialized snapshot.
 // Caller MUST hold g_mutex.
 static void restore_state(const json& state) {
-    g_windows.clear();
-    g_window_order.clear();
+    std::map<std::string, WindowState> restored_windows;
+    std::vector<std::string> restored_order;
     if (state.contains("window_order") && state["window_order"].is_array()) {
+        if (state["window_order"].size() > MAX_LAYOUT_WINDOWS)
+            throw std::length_error("window count exceeds the limit of 256");
         for (const auto& wid : state["window_order"])
-            g_window_order.push_back(wid.get<std::string>());
+            restored_order.push_back(wid.get<std::string>());
     }
+    size_t widget_count = 0;
     if (state.contains("windows") && state["windows"].is_object()) {
+        if (state["windows"].size() > MAX_LAYOUT_WINDOWS)
+            throw std::length_error("window count exceeds the limit of 256");
         for (auto& [wid, wj] : state["windows"].items()) {
             WindowState win;
             win.id = wj.value("id", wid);
@@ -953,19 +1386,56 @@ static void restore_state(const json& state) {
             }
             if (wj.contains("widgets") && wj["widgets"].is_object()) {
                 for (auto& [gid, wjson] : wj["widgets"].items())
-                    win.widgets[gid] = deserialize_widget_full(wjson);
+                    win.widgets[gid] = deserialize_widget_full_at_depth(
+                        wjson, 1, widget_count);
             }
-            g_windows[wid] = std::move(win);
+            restored_windows[wid] = std::move(win);
         }
+    }
+    validate_state_limits(restored_windows, restored_order);
+    g_windows.swap(restored_windows);
+    g_window_order.swap(restored_order);
+}
+
+static size_t g_undo_bytes = 0;
+static size_t g_redo_bytes = 0;
+static size_t g_snapshot_bytes = 0;
+
+static size_t serialized_json_bytes(const json& value) {
+    return value.dump().size();
+}
+
+static void remove_oldest_history_entry(std::vector<json>& stack,
+                                        size_t& byte_count) {
+    if (stack.empty())
+        return;
+    const size_t bytes = serialized_json_bytes(stack.front());
+    byte_count = bytes > byte_count ? 0 : byte_count - bytes;
+    stack.erase(stack.begin());
+}
+
+static void trim_history_storage() {
+    while (static_cast<int>(g_undo_stack.size()) > g_max_undo)
+        remove_oldest_history_entry(g_undo_stack, g_undo_bytes);
+    while (g_undo_bytes + g_redo_bytes > MAX_HISTORY_BYTES) {
+        if (!g_undo_stack.empty())
+            remove_oldest_history_entry(g_undo_stack, g_undo_bytes);
+        else if (!g_redo_stack.empty())
+            remove_oldest_history_entry(g_redo_stack, g_redo_bytes);
+        else
+            break;
     }
 }
 
 // Push current state onto the undo stack. Caller MUST hold g_mutex.
 static void push_undo_state() {
-    g_undo_stack.push_back(serialize_state());
-    if ((int)g_undo_stack.size() > g_max_undo)
-        g_undo_stack.erase(g_undo_stack.begin());
+    json state = serialize_state();
+    const size_t state_bytes = serialized_json_bytes(state);
+    g_undo_stack.push_back(std::move(state));
+    g_undo_bytes += state_bytes;
     g_redo_stack.clear(); // new action invalidates redo history
+    g_redo_bytes = 0;
+    trim_history_storage();
 }
 // ─── Anchor string parsing ─────────────────────────────────────────────────
 
@@ -984,26 +1454,293 @@ static Anchor parse_anchor(const std::string& s) {
 
 // ─── Export / Import helpers ─────────────────────────────────────────────────
 
+static bool is_protocol_stdout_path(const std::filesystem::path& path) {
+    std::string normalized = path.lexically_normal().generic_string();
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (normalized == "-" || normalized == "/dev/stdout" ||
+        normalized == "/dev/fd/1" || normalized == "/proc/self/fd/1") {
+        return true;
+    }
+
+#ifdef _WIN32
+    std::string leaf = path.filename().string();
+    std::transform(leaf.begin(), leaf.end(), leaf.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    while (!leaf.empty() && (leaf.back() == ' ' || leaf.back() == '.' ||
+                             leaf.back() == ':'))
+        leaf.pop_back();
+    const size_t dot = leaf.find('.');
+    const std::string device = leaf.substr(0, dot);
+    const bool numbered_device = device.size() == 4 &&
+        (device.compare(0, 3, "com") == 0 ||
+         device.compare(0, 3, "lpt") == 0) &&
+        device[3] >= '1' && device[3] <= '9';
+    if (device == "con" || device == "conin$" || device == "conout$" ||
+        device == "prn" || device == "aux" || device == "nul" ||
+        device == "clock$" || numbered_device) {
+        return true;
+    }
+#else
+    for (const char* descriptor_path : {"/proc/self/fd/1", "/dev/fd/1"}) {
+        std::error_code error;
+        if (std::filesystem::equivalent(path, descriptor_path, error) && !error)
+            return true;
+    }
+#endif
+    return false;
+}
+
+static void validate_regular_file_path(const std::string& raw_path,
+                                       bool must_exist) {
+    if (raw_path.empty())
+        throw std::invalid_argument("file path cannot be empty");
+
+    const std::filesystem::path path(raw_path);
+    if (is_protocol_stdout_path(path)) {
+        throw std::invalid_argument(
+            "file path must be a regular file and must not target protocol stdout");
+    }
+
+    std::error_code error;
+    const std::filesystem::file_status status =
+        std::filesystem::symlink_status(path, error);
+    if (error && error != std::errc::no_such_file_or_directory)
+        throw std::runtime_error("failed to inspect file path: " + raw_path);
+
+    const bool exists = !error && std::filesystem::exists(status);
+    if (must_exist && !exists)
+        throw std::runtime_error("file does not exist: " + raw_path);
+    if (exists && (std::filesystem::is_symlink(status) ||
+                   !std::filesystem::is_regular_file(status))) {
+        throw std::invalid_argument("file path must be a regular file: " + raw_path);
+    }
+}
+
+#ifndef _WIN32
+static int open_posix_regular_file(const std::string& path, int access_flags,
+                                   bool truncate_file, off_t& file_size,
+                                   const char* purpose) {
+    int flags = access_flags | O_NONBLOCK;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    if (access_flags != O_RDONLY)
+        flags |= O_CREAT;
+
+    const int descriptor = access_flags == O_RDONLY
+        ? open(path.c_str(), flags)
+        : open(path.c_str(), flags, 0666);
+    if (descriptor < 0)
+        throw std::runtime_error(std::string("failed to open ") + purpose +
+                                 " file: " + path);
+
+    struct stat status {};
+    if (fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode)) {
+        close(descriptor);
+        throw std::invalid_argument("file path must be a regular file: " + path);
+    }
+
+    struct stat stdout_status {};
+    if (fstat(STDOUT_FILENO, &stdout_status) == 0 &&
+        status.st_dev == stdout_status.st_dev &&
+        status.st_ino == stdout_status.st_ino) {
+        close(descriptor);
+        throw std::invalid_argument(
+            "file path must not target the protocol stdout stream: " + path);
+    }
+
+    file_size = status.st_size;
+    if (truncate_file && ftruncate(descriptor, 0) != 0) {
+        close(descriptor);
+        throw std::runtime_error("failed to truncate export file: " + path);
+    }
+    return descriptor;
+}
+#endif
+
+static void write_export_file(const std::string& path,
+                              const std::string& contents) {
+    validate_regular_file_path(path, false);
+#ifdef _WIN32
+    if (contents.size() > static_cast<size_t>(
+            std::numeric_limits<std::streamsize>::max())) {
+        throw std::length_error("export is too large to write");
+    }
+
+    std::ofstream file(path, std::ios::binary | std::ios::out | std::ios::trunc);
+    if (!file.is_open())
+        throw std::runtime_error("failed to open export file: " + path);
+    file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    if (!file)
+        throw std::runtime_error("failed to write export file: " + path);
+    file.flush();
+    if (!file)
+        throw std::runtime_error("failed to flush export file: " + path);
+    file.close();
+    if (file.fail())
+        throw std::runtime_error("failed to close export file: " + path);
+#else
+    off_t ignored_size = 0;
+    const int descriptor = open_posix_regular_file(
+        path, O_WRONLY, true, ignored_size, "export");
+    FILE* file = fdopen(descriptor, "wb");
+    if (!file) {
+        close(descriptor);
+        throw std::runtime_error("failed to open export file stream: " + path);
+    }
+
+    if (std::fwrite(contents.data(), 1, contents.size(), file) != contents.size()) {
+        std::fclose(file);
+        throw std::runtime_error("failed to write export file: " + path);
+    }
+    if (std::fflush(file) != 0) {
+        std::fclose(file);
+        throw std::runtime_error("failed to flush export file: " + path);
+    }
+    if (std::fclose(file) != 0)
+        throw std::runtime_error("failed to close export file: " + path);
+#endif
+}
+
+static std::string read_import_file(const std::string& path) {
+    validate_regular_file_path(path, true);
+
+#ifdef _WIN32
+    std::error_code error;
+    const uintmax_t expected_size = std::filesystem::file_size(path, error);
+    if (error)
+        throw std::runtime_error("failed to determine import file size: " + path);
+    if (expected_size > MAX_IMPORT_FILE_BYTES)
+        throw std::length_error("import file exceeds the 4 MiB limit");
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open())
+        throw std::runtime_error("failed to open import file: " + path);
+
+    std::string contents;
+    contents.reserve(static_cast<size_t>(expected_size));
+    char buffer[64 * 1024];
+    while (file) {
+        file.read(buffer, sizeof(buffer));
+        const std::streamsize count = file.gcount();
+        if (count > 0) {
+            const size_t bytes = static_cast<size_t>(count);
+            if (bytes > MAX_IMPORT_FILE_BYTES - contents.size())
+                throw std::length_error("import file exceeds the 4 MiB limit");
+            contents.append(buffer, bytes);
+        }
+    }
+    if (!file.eof())
+        throw std::runtime_error("failed to read import file: " + path);
+    file.clear();
+    file.close();
+    if (file.fail())
+        throw std::runtime_error("failed to close import file: " + path);
+    return contents;
+#else
+    off_t descriptor_size = 0;
+    const int descriptor = open_posix_regular_file(
+        path, O_RDONLY, false, descriptor_size, "import");
+    if (descriptor_size < 0 ||
+        static_cast<uintmax_t>(descriptor_size) > MAX_IMPORT_FILE_BYTES) {
+        close(descriptor);
+        throw std::length_error("import file exceeds the 4 MiB limit");
+    }
+
+    FILE* file = fdopen(descriptor, "rb");
+    if (!file) {
+        close(descriptor);
+        throw std::runtime_error("failed to open import file stream: " + path);
+    }
+
+    std::string contents;
+    contents.reserve(static_cast<size_t>(descriptor_size));
+    char buffer[64 * 1024];
+    while (true) {
+        const size_t count = std::fread(buffer, 1, sizeof(buffer), file);
+        if (count > 0) {
+            if (count > MAX_IMPORT_FILE_BYTES - contents.size()) {
+                std::fclose(file);
+                throw std::length_error("import file exceeds the 4 MiB limit");
+            }
+            contents.append(buffer, count);
+        }
+        if (count < sizeof(buffer)) {
+            if (std::ferror(file)) {
+                std::fclose(file);
+                throw std::runtime_error("failed to read import file: " + path);
+            }
+            break;
+        }
+    }
+    if (std::fclose(file) != 0)
+        throw std::runtime_error("failed to close import file: " + path);
+    return contents;
+#endif
+}
+
+static json parse_json_with_depth_limit(const std::string& contents) {
+    bool depth_exceeded = false;
+    auto depth_callback = [&depth_exceeded](int depth, json::parse_event_t event,
+                                            json&) {
+        const bool starts_container =
+            event == json::parse_event_t::object_start ||
+            event == json::parse_event_t::array_start;
+        if (starts_container && depth >= MAX_JSON_NESTING_DEPTH) {
+            depth_exceeded = true;
+            return false;
+        }
+        return true;
+    };
+    json parsed = json::parse(contents, depth_callback);
+    if (depth_exceeded)
+        throw std::length_error("JSON nesting exceeds the limit of 64");
+    return parsed;
+}
+
 // Make a valid C++ identifier from a widget id (replace non-alnum with _).
 static std::string sanitize_id(const std::string& id) {
     std::string out;
+    uint32_t hash = 2166136261u;
     for (char c : id) {
+        hash ^= static_cast<unsigned char>(c);
+        hash *= 16777619u;
         out += (std::isalnum(static_cast<unsigned char>(c)) || c == '_') ? c : '_';
     }
     if (!out.empty() && std::isdigit(static_cast<unsigned char>(out[0])))
         out = "_" + out;
-    return out.empty() ? "w" : out;
+    if (out.empty())
+        out = "w";
+    return out + "_" + std::to_string(hash);
 }
 
 // Escape a string for use inside C++ double-quoted string literals.
 static std::string cpp_escape(const std::string& s) {
     std::string out;
-    for (char c : s) {
+    for (unsigned char c : s) {
         if (c == '"') out += "\\\"";
         else if (c == '\\') out += "\\\\";
         else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
         else if (c == '\t') out += "\\t";
-        else out += c;
+        else if (c == '\b') out += "\\b";
+        else if (c == '\f') out += "\\f";
+        else if (c == '\v') out += "\\v";
+        else if (c < 0x20 || c == 0x7f) {
+            char escaped[4] = {
+                '\\',
+                static_cast<char>('0' + ((c >> 6) & 0x07)),
+                static_cast<char>('0' + ((c >> 3) & 0x07)),
+                static_cast<char>('0' + (c & 0x07)),
+            };
+            out.append(escaped, sizeof(escaped));
+        } else {
+            out += static_cast<char>(c);
+        }
     }
     return out;
 }
@@ -1011,12 +1748,45 @@ static std::string cpp_escape(const std::string& s) {
 // Escape a string for use inside Lua double-quoted string literals.
 static std::string lua_escape(const std::string& s) {
     std::string out;
-    for (char c : s) {
+    for (unsigned char c : s) {
         if (c == '"') out += "\\\"";
         else if (c == '\\') out += "\\\\";
         else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
         else if (c == '\t') out += "\\t";
-        else out += c;
+        else if (c == '\b') out += "\\b";
+        else if (c == '\f') out += "\\f";
+        else if (c == '\v') out += "\\v";
+        else if (c < 0x20 || c == 0x7f) {
+            char escaped[4] = {
+                '\\',
+                static_cast<char>('0' + c / 100),
+                static_cast<char>('0' + (c / 10) % 10),
+                static_cast<char>('0' + c % 10),
+            };
+            out.append(escaped, sizeof(escaped));
+        } else {
+            out += static_cast<char>(c);
+        }
+    }
+    return out;
+}
+
+// Keep generated line comments single-line and ASCII-only. Backslashes and
+// question marks are encoded as well, preventing C++ line splicing and legacy
+// trigraphs from turning attacker-controlled text into source syntax.
+static std::string code_comment_escape(const std::string& s) {
+    static constexpr char HEX[] = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : s) {
+        if (c >= 0x20 && c <= 0x7e && c != '\\' && c != '?') {
+            out += static_cast<char>(c);
+        } else {
+            out += "<0x";
+            out += HEX[c >> 4];
+            out += HEX[c & 0x0f];
+            out += '>';
+        }
     }
     return out;
 }
@@ -1026,26 +1796,28 @@ static void generate_cpp_widget(std::ostringstream& ss, const Widget& w, int ind
     std::string pad(indent * 4, ' ');
     std::string sid = sanitize_id(w.id);
     std::string label = cpp_escape(w.label.empty() ? w.id : w.label);
+    std::string comment_label = code_comment_escape(w.label.empty() ? w.id : w.label);
+    std::string text = cpp_escape(w.content.empty() ? (w.label.empty() ? w.id : w.label) : w.content);
 
     switch (w.type) {
         case WidgetType::Text:
-            ss << pad << "ImGui::Text(\"" << label << "\");\n";
+            ss << pad << "ImGui::TextUnformatted(\"" << text << "\");\n";
             break;
         case WidgetType::TextColored:
             ss << pad << "ImGui::TextColored(ImVec4(" << w.color[0] << "f, " << w.color[1]
-               << "f, " << w.color[2] << "f, " << w.color[3] << "f), \"" << label << "\");\n";
+               << "f, " << w.color[2] << "f, " << w.color[3] << "f), \"%s\", \"" << text << "\");\n";
             break;
         case WidgetType::TextDisabled:
-            ss << pad << "ImGui::TextDisabled(\"" << label << "\");\n";
+            ss << pad << "ImGui::TextDisabled(\"%s\", \"" << text << "\");\n";
             break;
         case WidgetType::TextWrapped:
-            ss << pad << "ImGui::TextWrapped(\"" << label << "\");\n";
+            ss << pad << "ImGui::TextWrapped(\"%s\", \"" << text << "\");\n";
             break;
         case WidgetType::LabelText:
-            ss << pad << "ImGui::LabelText(\"" << cpp_escape(w.hint) << "\", \"" << label << "\");\n";
+            ss << pad << "ImGui::LabelText(\"" << label << "\", \"%s\", \"" << text << "\");\n";
             break;
         case WidgetType::BulletText:
-            ss << pad << "ImGui::BulletText(\"" << label << "\");\n";
+            ss << pad << "ImGui::BulletText(\"%s\", \"" << text << "\");\n";
             break;
         case WidgetType::SeparatorText:
             ss << pad << "ImGui::SeparatorText(\"" << label << "\");\n";
@@ -1254,8 +2026,8 @@ static void generate_cpp_widget(std::ostringstream& ss, const Widget& w, int ind
                << w.size_x << "f, " << w.size_y << "f))) {\n";
             for (auto& child : w.children)
                 generate_cpp_widget(ss, child, indent + 1);
-            ss << pad << "    ImGui::EndChild();\n";
             ss << pad << "}\n";
+            ss << pad << "ImGui::EndChild();\n";
             break;
         case WidgetType::Group:
             ss << pad << "ImGui::BeginGroup();\n";
@@ -1291,11 +2063,14 @@ static void generate_cpp_widget(std::ostringstream& ss, const Widget& w, int ind
         case WidgetType::Tooltip:
         case WidgetType::SetItemTooltip:
             ss << pad << "if (ImGui::IsItemHovered()) {\n";
-            ss << pad << "    ImGui::SetTooltip(\"" << cpp_escape(w.tooltip.empty() ? w.content : w.tooltip) << "\");\n";
+            ss << pad << "    ImGui::SetTooltip(\"%s\", \""
+               << cpp_escape(w.tooltip.empty() ? w.content : w.tooltip)
+               << "\");\n";
             ss << pad << "}\n";
             break;
         default:
-            ss << pad << "// " << widget_type_to_string(w.type) << ": \"" << label << "\" (not exported)\n";
+            ss << pad << "// " << widget_type_to_string(w.type) << ": \""
+               << comment_label << "\" (not exported)\n";
             break;
     }
 }
@@ -1305,6 +2080,7 @@ static void generate_lua_widget(std::ostringstream& ss, const Widget& w, int ind
     std::string pad(indent * 4, ' ');
     std::string sid = sanitize_id(w.id);
     std::string label = lua_escape(w.label.empty() ? w.id : w.label);
+    std::string comment_label = code_comment_escape(w.label.empty() ? w.id : w.label);
 
     switch (w.type) {
         case WidgetType::Text:
@@ -1467,8 +2243,8 @@ static void generate_lua_widget(std::ostringstream& ss, const Widget& w, int ind
             ss << pad << "if imgui.BeginChild(\"" << sid << "\", " << w.size_x << ", " << w.size_y << ") then\n";
             for (auto& child : w.children)
                 generate_lua_widget(ss, child, indent + 1);
-            ss << pad << "    imgui.EndChild()\n";
             ss << pad << "end\n";
+            ss << pad << "imgui.EndChild()\n";
             break;
         case WidgetType::Group:
             ss << pad << "imgui.BeginGroup()\n";
@@ -1486,51 +2262,293 @@ static void generate_lua_widget(std::ostringstream& ss, const Widget& w, int ind
             ss << pad << "end\n";
             break;
         default:
-            ss << pad << "-- " << widget_type_to_string(w.type) << ": \"" << label << "\" (not exported)\n";
+            ss << pad << "-- " << widget_type_to_string(w.type) << ": \""
+               << comment_label << "\" (not exported)\n";
             break;
     }
 }
 
-// Serialize a widget to JSON for export_json (public-facing format).
-static json widget_export_json(const Widget& w) {
-    json j;
-    j["id"] = w.id;
-    j["type"] = widget_type_to_string(w.type);
-    j["label"] = w.label;
-    if (!w.content.empty()) j["content"] = w.content;
-    if (!w.hint.empty()) j["hint"] = w.hint;
-    if (!w.tooltip.empty()) j["tooltip"] = w.tooltip;
-    if (!w.overlay.empty()) j["overlay"] = w.overlay;
-    if (!w.format.empty()) j["format"] = w.format;
-    j["value"] = w.float_val[0];
-    j["min"] = w.float_min;
-    j["max"] = w.float_max;
-    j["int_value"] = w.int_val[0];
-    j["int_min"] = w.int_min;
-    j["int_max"] = w.int_max;
-    j["checked"] = w.bool_val;
-    std::string tb(w.text_buf);
-    if (!tb.empty()) j["text"] = tb;
-    if (w.selected >= 0) j["selected"] = w.selected;
-    if (!w.items.empty()) j["items"] = w.items;
-    j["color"] = {w.color[0], w.color[1], w.color[2], w.color[3]};
-    if (w.size_x > 0 || w.size_y > 0) { j["size_x"] = w.size_x; j["size_y"] = w.size_y; }
-    if (w.flags != 0) j["flags"] = w.flags;
-    if (!w.enabled) j["enabled"] = false;
-    if (w.type == WidgetType::InputDouble) j["double_value"] = w.double_val;
-    if (!w.children.empty()) {
-        json kids = json::array();
-        for (auto& c : w.children) kids.push_back(widget_export_json(c));
-        j["children"] = kids;
-    }
-    if (w.type == WidgetType::Table) {
-        j["columns"] = w.columns;
-        if (!w.headers.empty()) j["headers"] = w.headers;
-        if (!w.rows.empty()) j["rows"] = w.rows;
-    }
-    return j;
-}
 // ─── Command processing ─────────────────────────────────────────────────────
+
+static int parse_window_flags(const json& cmd) {
+    if (!cmd.contains("flags"))
+        return ImGuiWindowFlags_None;
+
+    static constexpr int supported_flags =
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_MenuBar |
+        ImGuiWindowFlags_HorizontalScrollbar;
+
+    const json& flags = cmd["flags"];
+    if (flags.is_number_integer()) {
+        const int bitmask = flags.get<int>();
+        if (bitmask < 0 || (bitmask & ~supported_flags) != 0)
+            throw std::invalid_argument("flags integer contains unsupported window flag bits");
+        return bitmask;
+    }
+    if (!flags.is_array())
+        throw std::invalid_argument("flags must be an integer bitmask or an array of names");
+
+    static const std::map<std::string, ImGuiWindowFlags> names = {
+        {"no_title_bar", ImGuiWindowFlags_NoTitleBar},
+        {"no_resize", ImGuiWindowFlags_NoResize},
+        {"no_move", ImGuiWindowFlags_NoMove},
+        {"no_collapse", ImGuiWindowFlags_NoCollapse},
+        {"always_auto_resize", ImGuiWindowFlags_AlwaysAutoResize},
+        {"menubar", ImGuiWindowFlags_MenuBar},
+        {"horizontal_scrollbar", ImGuiWindowFlags_HorizontalScrollbar},
+    };
+
+    int bitmask = ImGuiWindowFlags_None;
+    for (const auto& flag : flags) {
+        if (!flag.is_string())
+            throw std::invalid_argument("window flag names must be strings");
+        auto it = names.find(flag.get<std::string>());
+        if (it == names.end())
+            throw std::invalid_argument("unknown window flag: " + flag.dump());
+        bitmask |= it->second;
+    }
+    return bitmask;
+}
+
+std::string imgui_window_name(const WindowState& window) {
+    return window.title + "###" + window.id;
+}
+
+static std::string default_screenshot_path() {
+    try {
+        return (std::filesystem::temp_directory_path() / "imgui_screenshot.bmp").string();
+    } catch (const std::filesystem::filesystem_error&) {
+        return "imgui_screenshot.bmp";
+    }
+}
+
+static void queue_screenshot(const json& command, const std::string& path,
+                             bool annotated, json metadata = json::object()) {
+    g_screenshot = ScreenshotRequest{};
+    g_screenshot.pending = true;
+    g_screenshot.path = path;
+    g_screenshot.annotated = annotated;
+    g_screenshot.command = command.value("cmd", "screenshot");
+    g_screenshot.metadata = std::move(metadata);
+    g_screenshot.has_request_id = command.contains("request_id");
+    if (g_screenshot.has_request_id)
+        g_screenshot.request_id = command["request_id"];
+}
+
+static size_t utf8_prefix_size(const std::string& text, size_t maximum) {
+    size_t offset = 0;
+    while (offset < text.size() && offset < maximum) {
+        const unsigned char lead = static_cast<unsigned char>(text[offset]);
+        size_t length = 1;
+        if (lead >= 0xc2u && lead <= 0xdfu) length = 2;
+        else if (lead >= 0xe0u && lead <= 0xefu) length = 3;
+        else if (lead >= 0xf0u && lead <= 0xf4u) length = 4;
+        if (offset + length > text.size() || offset + length > maximum)
+            break;
+        bool valid = true;
+        for (size_t index = 1; index < length; ++index) {
+            const unsigned char continuation = static_cast<unsigned char>(text[offset + index]);
+            if ((continuation & 0xc0u) != 0x80u) {
+                valid = false;
+                break;
+            }
+        }
+        offset += valid ? length : 1u;
+    }
+    return offset;
+}
+
+static constexpr size_t MAX_TEXTURE_PIXELS = 16u * 1024u * 1024u;
+
+static uint16_t read_le16(const uint8_t* bytes) {
+    return static_cast<uint16_t>(bytes[0]) |
+           static_cast<uint16_t>(static_cast<uint16_t>(bytes[1]) << 8u);
+}
+
+static uint32_t read_le32(const uint8_t* bytes) {
+    return static_cast<uint32_t>(bytes[0]) |
+           (static_cast<uint32_t>(bytes[1]) << 8u) |
+           (static_cast<uint32_t>(bytes[2]) << 16u) |
+           (static_cast<uint32_t>(bytes[3]) << 24u);
+}
+
+static int64_t signed_le32(const uint8_t* bytes) {
+    const uint32_t value = read_le32(bytes);
+    return value <= 0x7fffffffu
+        ? static_cast<int64_t>(value)
+        : static_cast<int64_t>(value) - 0x100000000ll;
+}
+
+static bool upload_rgba_texture(LoadedTexture& texture, int width, int height,
+                                const std::vector<uint8_t>& rgba) {
+    if (width <= 0 || height <= 0 ||
+        rgba.size() != static_cast<size_t>(width) * static_cast<size_t>(height) * 4u)
+        return false;
+
+    glGenTextures(1, &texture.tex_id);
+    if (texture.tex_id == 0)
+        return false;
+    glBindTexture(GL_TEXTURE_2D, texture.tex_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    texture.width = width;
+    texture.height = height;
+    texture.valid = true;
+    return true;
+}
+
+static bool load_bmp_texture(std::ifstream& file, LoadedTexture& texture) {
+    uint8_t header[54] = {};
+    file.clear();
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (file.gcount() != static_cast<std::streamsize>(sizeof(header)) ||
+        header[0] != 'B' || header[1] != 'M')
+        return false;
+
+    const uint32_t data_offset = read_le32(&header[10]);
+    const uint32_t dib_size = read_le32(&header[14]);
+    const int64_t width64 = signed_le32(&header[18]);
+    const int64_t signed_height = signed_le32(&header[22]);
+    const uint16_t planes = read_le16(&header[26]);
+    const uint16_t bits_per_pixel = read_le16(&header[28]);
+    const uint32_t compression = read_le32(&header[30]);
+    if (dib_size < 40u || width64 <= 0 || signed_height == 0 ||
+        planes != 1u || compression != 0u ||
+        (bits_per_pixel != 24u && bits_per_pixel != 32u))
+        return false;
+
+    const uint64_t height64 = signed_height < 0
+        ? static_cast<uint64_t>(-signed_height)
+        : static_cast<uint64_t>(signed_height);
+    if (width64 > std::numeric_limits<int>::max() ||
+        height64 > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+        return false;
+    const size_t width = static_cast<size_t>(width64);
+    const size_t height = static_cast<size_t>(height64);
+    if (width > MAX_TEXTURE_PIXELS / height)
+        return false;
+
+    const size_t channels = bits_per_pixel / 8u;
+    if (width > (std::numeric_limits<size_t>::max() - 3u) / channels)
+        return false;
+    const size_t row_size = ((width * channels + 3u) / 4u) * 4u;
+    if (height > std::numeric_limits<size_t>::max() / row_size)
+        return false;
+    const size_t source_size = row_size * height;
+
+    file.clear();
+    file.seekg(0, std::ios::end);
+    const std::streamoff file_size = file.tellg();
+    if (file_size < 0 || static_cast<uint64_t>(data_offset) + source_size >
+            static_cast<uint64_t>(file_size) ||
+        source_size > static_cast<size_t>(std::numeric_limits<std::streamsize>::max()))
+        return false;
+
+    std::vector<uint8_t> source(source_size);
+    file.seekg(static_cast<std::streamoff>(data_offset), std::ios::beg);
+    file.read(reinterpret_cast<char*>(source.data()),
+              static_cast<std::streamsize>(source.size()));
+    if (file.gcount() != static_cast<std::streamsize>(source.size()))
+        return false;
+
+    std::vector<uint8_t> rgba(width * height * 4u);
+    for (size_t source_y = 0; source_y < height; ++source_y) {
+        const size_t destination_y = signed_height > 0 ? height - 1u - source_y : source_y;
+        for (size_t x = 0; x < width; ++x) {
+            const size_t source_index = source_y * row_size + x * channels;
+            const size_t destination_index = (destination_y * width + x) * 4u;
+            rgba[destination_index] = source[source_index + 2u];
+            rgba[destination_index + 1u] = source[source_index + 1u];
+            rgba[destination_index + 2u] = source[source_index];
+            rgba[destination_index + 3u] = channels == 4u ? source[source_index + 3u] : 255u;
+        }
+    }
+    return upload_rgba_texture(texture, static_cast<int>(width),
+                               static_cast<int>(height), rgba);
+}
+
+static bool read_ppm_token(std::ifstream& file, std::string& token) {
+    token.clear();
+    char character = 0;
+    while (file.get(character)) {
+        if (character == '#') {
+            file.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+            continue;
+        }
+        if (!std::isspace(static_cast<unsigned char>(character))) {
+            token.push_back(character);
+            break;
+        }
+    }
+    while (file.get(character)) {
+        if (std::isspace(static_cast<unsigned char>(character)))
+            break;
+        if (token.size() >= 32u)
+            return false;
+        token.push_back(character);
+    }
+    return !token.empty();
+}
+
+static bool parse_decimal(const std::string& token, int& value) {
+    const auto result = std::from_chars(token.data(), token.data() + token.size(), value);
+    return result.ec == std::errc{} && result.ptr == token.data() + token.size();
+}
+
+static bool load_ppm_texture(std::ifstream& file, LoadedTexture& texture) {
+    file.clear();
+    file.seekg(0, std::ios::beg);
+    std::string magic, token;
+    if (!read_ppm_token(file, magic) || (magic != "P6" && magic != "P3"))
+        return false;
+    int width = 0, height = 0, maximum = 0;
+    if (!read_ppm_token(file, token) || !parse_decimal(token, width) ||
+        !read_ppm_token(file, token) || !parse_decimal(token, height) ||
+        !read_ppm_token(file, token) || !parse_decimal(token, maximum) ||
+        width <= 0 || height <= 0 || maximum <= 0 || maximum > 255)
+        return false;
+
+    const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (pixel_count > MAX_TEXTURE_PIXELS ||
+        static_cast<size_t>(width) > MAX_TEXTURE_PIXELS / static_cast<size_t>(height))
+        return false;
+    std::vector<uint8_t> rgb(pixel_count * 3u);
+    if (magic == "P6") {
+        file.read(reinterpret_cast<char*>(rgb.data()),
+                  static_cast<std::streamsize>(rgb.size()));
+        if (file.gcount() != static_cast<std::streamsize>(rgb.size()))
+            return false;
+        if (maximum != 255) {
+            for (uint8_t& component : rgb)
+                component = static_cast<uint8_t>(static_cast<int>(component) * 255 / maximum);
+        }
+    } else {
+        for (uint8_t& component : rgb) {
+            int value = 0;
+            if (!read_ppm_token(file, token) || !parse_decimal(token, value) ||
+                value < 0 || value > maximum)
+                return false;
+            component = static_cast<uint8_t>(value * 255 / maximum);
+        }
+    }
+
+    std::vector<uint8_t> rgba(pixel_count * 4u);
+    for (size_t pixel = 0; pixel < pixel_count; ++pixel) {
+        rgba[pixel * 4u] = rgb[pixel * 3u];
+        rgba[pixel * 4u + 1u] = rgb[pixel * 3u + 1u];
+        rgba[pixel * 4u + 2u] = rgb[pixel * 3u + 2u];
+        rgba[pixel * 4u + 3u] = 255u;
+    }
+    return upload_rgba_texture(texture, width, height, rgba);
+}
 
 void process_command(const json& cmd) {
     const std::string type = cmd.value("cmd", "");
@@ -1544,14 +2562,19 @@ void process_command(const json& cmd) {
         win.y = cmd.value("y", 100.0f);
         win.w = cmd.value("w", 400.0f);
         win.h = cmd.value("h", 300.0f);
-        win.flags = cmd.value("flags", 0);
+        win.flags = parse_window_flags(cmd);
         win.has_menubar = cmd.value("has_menubar", false);
         win.open = cmd.value("open", true);
 
         std::lock_guard<std::mutex> lock(g_mutex);
-        if (g_windows.find(id) == g_windows.end())
-            g_window_order.push_back(id);
-        g_windows[id] = win;
+        auto candidate_windows = g_windows;
+        auto candidate_order = g_window_order;
+        if (candidate_windows.find(id) == candidate_windows.end())
+            candidate_order.push_back(id);
+        candidate_windows[id] = std::move(win);
+        validate_state_limits(candidate_windows, candidate_order);
+        g_windows.swap(candidate_windows);
+        g_window_order.swap(candidate_order);
         emit_json({{"type", "ack"}, {"cmd", type}, {"id", id}});
 
     } else if (type == "remove_window") {
@@ -1572,13 +2595,19 @@ void process_command(const json& cmd) {
             emit_json({{"type", "error"}, {"cmd", type}, {"message", "window not found: " + win_id}});
             return;
         }
-        push_undo_state();
         Widget w = parse_widget_json(cmd);
-        auto& win = it->second;
-        if (win.widgets.find(w.id) == win.widgets.end())
-            win.widget_order.push_back(w.id);
-        win.widgets[w.id] = w;
-        emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"id", w.id}});
+        auto candidate_windows = g_windows;
+        auto candidate_order = g_window_order;
+        auto& candidate_window = candidate_windows.at(win_id);
+        if (candidate_window.widgets.find(w.id) == candidate_window.widgets.end())
+            candidate_window.widget_order.push_back(w.id);
+        candidate_window.widgets[w.id] = std::move(w);
+        validate_state_limits(candidate_windows, candidate_order);
+        push_undo_state();
+        g_windows.swap(candidate_windows);
+        g_window_order.swap(candidate_order);
+        emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id},
+                   {"id", cmd.value("id", "")}});
 
     } else if (type == "remove_widget") {
         std::string win_id = cmd.value("window", "");
@@ -1607,10 +2636,19 @@ void process_command(const json& cmd) {
             emit_json({{"type", "error"}, {"cmd", type}, {"message", "widget not found: " + wid}});
             return;
         }
-        push_undo_state();
+        auto candidate_windows = g_windows;
+        auto candidate_order = g_window_order;
+        Widget* updated = find_widget_in_window(candidate_windows.at(win_id), wid);
+        if (!updated)
+            throw std::logic_error("candidate widget lookup failed");
         if (cmd.contains("widget_type") && cmd["widget_type"].is_string())
-            w->type = parse_widget_type(cmd["widget_type"].get<std::string>());
-        apply_widget_fields(*w, cmd);
+            updated->type = parse_widget_type(cmd["widget_type"].get<std::string>());
+        apply_widget_fields(*updated, cmd);
+        validate_widget_format(*updated);
+        validate_state_limits(candidate_windows, candidate_order);
+        push_undo_state();
+        g_windows.swap(candidate_windows);
+        g_window_order.swap(candidate_order);
         emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"id", wid}});
 
     } else if (type == "get_state") {
@@ -1646,9 +2684,27 @@ void process_command(const json& cmd) {
 
     } else if (type == "set_style") {
         std::string theme = cmd.value("theme", "dark");
+        std::vector<std::pair<int, ImVec4>> overrides;
+        if (cmd.contains("colors")) {
+            if (!cmd["colors"].is_object())
+                throw std::invalid_argument("colors must be an object");
+            for (const auto& [name, value] : cmd["colors"].items()) {
+                const int index = parse_style_color_index(json(name));
+                if (index < 0 || !value.is_array() || value.size() != 4 ||
+                    !std::all_of(value.begin(), value.end(),
+                        [](const json& component) { return component.is_number(); })) {
+                    throw std::invalid_argument("invalid custom style color: " + name);
+                }
+                overrides.emplace_back(index, ImVec4(
+                    value[0].get<float>(), value[1].get<float>(),
+                    value[2].get<float>(), value[3].get<float>()));
+            }
+        }
         if (theme == "light") ImGui::StyleColorsLight();
         else if (theme == "classic") ImGui::StyleColorsClassic();
         else ImGui::StyleColorsDark();
+        for (const auto& [index, color] : overrides)
+            ImGui::GetStyle().Colors[index] = color;
         emit_json({{"type", "ack"}, {"cmd", type}, {"theme", theme}});
 
     } else if (type == "push_style_color") {
@@ -1665,11 +2721,18 @@ void process_command(const json& cmd) {
                 c[i] = arr[i].get<float>();
         }
         ImGui::PushStyleColor(idx, ImVec4(c[0], c[1], c[2], c[3]));
+        ++g_style_color_depth;
         emit_json({{"type", "ack"}, {"cmd", type}, {"col_idx", idx}});
 
     } else if (type == "pop_style_color") {
         int count = cmd.value("count", 1);
+        if (count < 0 || count > g_style_color_depth) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "style color pop exceeds current stack depth"}});
+            return;
+        }
         ImGui::PopStyleColor(count);
+        g_style_color_depth -= count;
         emit_json({{"type", "ack"}, {"cmd", type}, {"count", count}});
 
     } else if (type == "push_style_var") {
@@ -1679,19 +2742,41 @@ void process_command(const json& cmd) {
             emit_json({{"type", "error"}, {"cmd", type}, {"message", "unknown style var index"}});
             return;
         }
-        if (cmd.contains("value") && cmd["value"].is_array() && cmd["value"].size() >= 2) {
+        const bool has_vec2 = cmd.contains("value") && cmd["value"].is_array() &&
+                              cmd["value"].size() == 2 &&
+                              cmd["value"][0].is_number() && cmd["value"][1].is_number();
+        if (style_var_is_vec2(idx) != has_vec2) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", style_var_is_vec2(idx)
+                           ? "style variable requires a two-number array"
+                           : "style variable requires a number"}});
+            return;
+        }
+        if (has_vec2) {
             float x = cmd["value"][0].get<float>();
             float y = cmd["value"][1].get<float>();
             ImGui::PushStyleVar(idx, ImVec2(x, y));
         } else {
-            float v = cmd.value("value", 0.0f);
+            if (!cmd.contains("value") || !cmd["value"].is_number()) {
+                emit_json({{"type", "error"}, {"cmd", type},
+                           {"message", "style variable requires a numeric value"}});
+                return;
+            }
+            float v = cmd["value"].get<float>();
             ImGui::PushStyleVar(idx, v);
         }
+        ++g_style_var_depth;
         emit_json({{"type", "ack"}, {"cmd", type}, {"var_idx", idx}});
 
     } else if (type == "pop_style_var") {
         int count = cmd.value("count", 1);
+        if (count < 0 || count > g_style_var_depth) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "style variable pop exceeds current stack depth"}});
+            return;
+        }
         ImGui::PopStyleVar(count);
+        g_style_var_depth -= count;
         emit_json({{"type", "ack"}, {"cmd", type}, {"count", count}});
 
     } else if (type == "set_background") {
@@ -1732,8 +2817,13 @@ void process_command(const json& cmd) {
 
         std::lock_guard<std::mutex> lock(g_mutex);
         auto it = g_windows.find(id);
-        // Named-window ImGui functions key off the window title.
-        std::string name = (it != g_windows.end()) ? it->second.title : id;
+        if (it == g_windows.end()) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "window not found: " + id}});
+            return;
+        }
+        // Named-window ImGui functions key off the full visible###stable ID.
+        std::string name = imgui_window_name(it->second);
 
         // Read up to two numeric operands from "values" array or x/y keys.
         float vx = 0.0f, vy = 0.0f;
@@ -1759,11 +2849,14 @@ void process_command(const json& cmd) {
             ImGui::SetWindowFocus(name.c_str());
         } else if (action == "set_bg_alpha") {
             float alpha = cmd.value("alpha", vx);
-            ImGui::SetNextWindowBgAlpha(alpha);
+            it->second.next_bg_alpha = std::clamp(alpha, 0.0f, 1.0f);
+        } else if (action == "set_scroll") {
+            it->second.next_scroll[0] = vx;
+            it->second.next_scroll[1] = vy;
         } else if (action == "set_scroll_x") {
-            ImGui::SetNextWindowScroll(ImVec2(vx, -1.0f));
+            it->second.next_scroll[0] = vx;
         } else if (action == "set_scroll_y") {
-            ImGui::SetNextWindowScroll(ImVec2(-1.0f, vx));
+            it->second.next_scroll[1] = vx;
         } else {
             emit_json({{"type", "error"}, {"cmd", type}, {"message", "unknown action: " + action}});
             return;
@@ -1801,7 +2894,9 @@ void process_command(const json& cmd) {
             emit_json({{"type", "error"}, {"cmd", type}, {"message", "window not found: " + win_id}});
             return;
         }
-        auto& win = it->second;
+        auto candidate_windows = g_windows;
+        auto candidate_order = g_window_order;
+        auto& win = candidate_windows.at(win_id);
         Widget* w = find_widget_in_window(win, wid);
         if (!w) {
             Widget nw;
@@ -1814,9 +2909,14 @@ void process_command(const json& cmd) {
         }
         w->draw_commands.clear();
         if (cmd.contains("commands") && cmd["commands"].is_array()) {
+            if (cmd["commands"].size() > MAX_DRAW_COMMANDS)
+                throw std::length_error("draw command count exceeds the limit of 1024");
             for (const auto& c : cmd["commands"])
                 w->draw_commands.push_back(parse_draw_command(c));
         }
+        validate_state_limits(candidate_windows, candidate_order);
+        g_windows.swap(candidate_windows);
+        g_window_order.swap(candidate_order);
         emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"id", wid}});
 
     } else if (type == "open_popup") {
@@ -1825,17 +2925,23 @@ void process_command(const json& cmd) {
         std::lock_guard<std::mutex> lock(g_mutex);
         auto it = g_windows.find(win_id);
         if (it != g_windows.end()) {
-            Widget* w = find_widget_in_window(it->second, wid);
+            auto candidate_windows = g_windows;
+            auto candidate_order = g_window_order;
+            auto& candidate_window = candidate_windows.at(win_id);
+            Widget* w = find_widget_in_window(candidate_window, wid);
             if (!w) {
                 Widget nw;
                 nw.id = wid;
                 nw.type = WidgetType::Popup;
                 nw.label = wid;
-                it->second.widget_order.push_back(wid);
-                it->second.widgets[wid] = nw;
-                w = &it->second.widgets[wid];
+                candidate_window.widget_order.push_back(wid);
+                candidate_window.widgets[wid] = nw;
+                w = &candidate_window.widgets[wid];
             }
             w->popup_open = true;
+            validate_state_limits(candidate_windows, candidate_order);
+            g_windows.swap(candidate_windows);
+            g_window_order.swap(candidate_order);
         }
         emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"id", wid}});
 
@@ -1851,49 +2957,37 @@ void process_command(const json& cmd) {
         emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"id", wid}});
 
     } else if (type == "screenshot") {
-        std::string path = cmd.value("path", "/tmp/imgui_screenshot.bmp");
-        int quality = cmd.value("quality", 90);
-        g_screenshot_path = path;
-        g_screenshot_quality = quality;
-        g_screenshot_annotated = false;
-        g_screenshot_requested = true;
+        if (g_screenshot.pending) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "a screenshot is already pending"}});
+            return;
+        }
+        std::string path = cmd.value("path", default_screenshot_path());
+        queue_screenshot(cmd, path, false);
         emit_json({{"type", "ack"}, {"cmd", type}, {"path", path}});
 
     } else if (type == "screenshot_widget") {
+        if (g_screenshot.pending) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "a screenshot is already pending"}});
+            return;
+        }
         std::string win_id = cmd.value("window", "");
         std::string wid = cmd.value("widget", "");
-        std::string path = cmd.value("path", "/tmp/imgui_screenshot.bmp");
-        json bounds_info = json::object();
-        {
-            std::lock_guard<std::mutex> lock(g_mutex);
-            auto it = g_windows.find(win_id);
-            if (it != g_windows.end()) {
-                Widget* w = find_widget_in_window(it->second, wid);
-                if (w) {
-                    bounds_info["found"] = true;
-                    bounds_info["widget"] = wid;
-                    bounds_info["window"] = win_id;
-                } else {
-                    bounds_info["found"] = false;
-                    bounds_info["error"] = "widget not found: " + wid;
-                }
-            } else {
-                bounds_info["found"] = false;
-                bounds_info["error"] = "window not found: " + win_id;
-            }
-        }
-        g_screenshot_path = path;
-        g_screenshot_quality = 90;
-        g_screenshot_annotated = false;
-        g_screenshot_requested = true;
-        emit_json({{"type", "ack"}, {"cmd", type}, {"path", path}, {"widget_info", bounds_info}});
+        std::string path = cmd.value("path", default_screenshot_path());
+        queue_screenshot(cmd, path, false);
+        g_screenshot.target_window = std::move(win_id);
+        g_screenshot.target_widget = std::move(wid);
+        emit_json({{"type", "ack"}, {"cmd", type}, {"path", path}});
 
     } else if (type == "screenshot_annotated") {
-        std::string path = cmd.value("path", "/tmp/imgui_screenshot.bmp");
-        g_screenshot_path = path;
-        g_screenshot_quality = 90;
-        g_screenshot_annotated = true;
-        g_screenshot_requested = true;
+        if (g_screenshot.pending) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "a screenshot is already pending"}});
+            return;
+        }
+        std::string path = cmd.value("path", default_screenshot_path());
+        queue_screenshot(cmd, path, true);
         emit_json({{"type", "ack"}, {"cmd", type}, {"path", path}, {"annotated", true}});
 
 
@@ -1911,7 +3005,7 @@ void process_command(const json& cmd) {
         }
         it->second.x = x;
         it->second.y = y;
-        ImGui::SetWindowPos(it->second.title.c_str(), ImVec2(x, y));
+        ImGui::SetWindowPos(imgui_window_name(it->second).c_str(), ImVec2(x, y));
         emit_json({{"type", "ack"}, {"cmd", type}, {"id", id}, {"x", x}, {"y", y}});
 
     } else if (type == "resize_window") {
@@ -1926,7 +3020,7 @@ void process_command(const json& cmd) {
         }
         it->second.w = w;
         it->second.h = h;
-        ImGui::SetWindowSize(it->second.title.c_str(), ImVec2(w, h));
+        ImGui::SetWindowSize(imgui_window_name(it->second).c_str(), ImVec2(w, h));
         emit_json({{"type", "ack"}, {"cmd", type}, {"id", id}, {"w", w}, {"h", h}});
 
     } else if (type == "move_widget") {
@@ -1990,8 +3084,12 @@ void process_command(const json& cmd) {
         std::string id = cmd.value("id", "");
         std::lock_guard<std::mutex> lock(g_mutex);
         auto it = g_windows.find(id);
-        std::string name = (it != g_windows.end()) ? it->second.title : id;
-        ImGui::SetWindowFocus(name.c_str());
+        if (it == g_windows.end()) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "window not found: " + id}});
+            return;
+        }
+        ImGui::SetWindowFocus(imgui_window_name(it->second).c_str());
         emit_json({{"type", "ack"}, {"cmd", type}, {"id", id}});
 
     } else if (type == "set_widget_size") {
@@ -2018,6 +3116,7 @@ void process_command(const json& cmd) {
         std::string win_id = cmd.value("window", "");
         int grid_size = cmd.value("grid_size", 8);
         if (grid_size < 1) grid_size = 1;
+        const float grid = static_cast<float>(grid_size);
         std::lock_guard<std::mutex> lock(g_mutex);
         auto it = g_windows.find(win_id);
         if (it == g_windows.end()) {
@@ -2025,8 +3124,8 @@ void process_command(const json& cmd) {
             return;
         }
         for (auto& [gid, w] : it->second.widgets) {
-            w.cursor_offset[0] = std::round(w.cursor_offset[0] / grid_size) * grid_size;
-            w.cursor_offset[1] = std::round(w.cursor_offset[1] / grid_size) * grid_size;
+            w.cursor_offset[0] = std::round(w.cursor_offset[0] / grid) * grid;
+            w.cursor_offset[1] = std::round(w.cursor_offset[1] / grid) * grid;
         }
         emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"grid_size", grid_size}});
 
@@ -2068,8 +3167,6 @@ void process_command(const json& cmd) {
             }
             cx = (w->rect_min[0] + w->rect_max[0]) * 0.5f;
             cy = (w->rect_min[1] + w->rect_max[1]) * 0.5f;
-            w->clicked = true;
-            emit_event(win_id, wid, "click", {{"button", button}});
         }
         {
             std::lock_guard<std::mutex> lock(g_input_mutex);
@@ -2095,11 +3192,20 @@ void process_command(const json& cmd) {
                 emit_json({{"type", "error"}, {"cmd", type}, {"message", "widget not found: " + wid}});
                 return;
             }
+            if (w->type != WidgetType::InputText &&
+                w->type != WidgetType::InputTextMultiline &&
+                w->type != WidgetType::InputTextWithHint) {
+                emit_json({{"type", "error"}, {"cmd", type},
+                           {"message", "target widget does not accept text input"}});
+                return;
+            }
             w->request_focus = true;
-        }
-        {
-            std::lock_guard<std::mutex> lock(g_input_mutex);
-            g_input_queue.push_back({{"type", "text_input"}, {"text", text}});
+            std::string combined(w->text_buf);
+            combined += text;
+            combined.resize(utf8_prefix_size(combined, sizeof(w->text_buf) - 1u));
+            std::memcpy(w->text_buf, combined.data(), combined.size());
+            w->text_buf[combined.size()] = '\0';
+            emit_event(win_id, wid, "changed", {{"text", combined}});
         }
         emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"id", wid}, {"text", text}});
 
@@ -2131,8 +3237,21 @@ void process_command(const json& cmd) {
     } else if (type == "scroll_window") {
         std::string win_id = cmd.value("window", "");
         float delta_y = cmd.value("delta_y", 1.0f);
+        float center_x = 0.0f, center_y = 0.0f;
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            auto it = g_windows.find(win_id);
+            if (it == g_windows.end()) {
+                emit_json({{"type", "error"}, {"cmd", type},
+                           {"message", "window not found: " + win_id}});
+                return;
+            }
+            center_x = it->second.x + it->second.w * 0.5f;
+            center_y = it->second.y + it->second.h * 0.5f;
+        }
         {
             std::lock_guard<std::mutex> lock(g_input_mutex);
+            g_input_queue.push_back({{"type", "mouse_move"}, {"x", center_x}, {"y", center_y}});
             g_input_queue.push_back({{"type", "mouse_scroll"}, {"x", 0.0f}, {"y", delta_y}});
         }
         emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"delta_y", delta_y}});
@@ -2314,8 +3433,14 @@ void process_command(const json& cmd) {
 
     } else if (type == "set_dpi_scale") {
         float scale = cmd.value("scale", 1.0f);
+        if (!std::isfinite(scale) || scale < 0.25f || scale > 4.0f) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "scale must be between 0.25 and 4.0"}});
+            return;
+        }
         ImGuiStyle& style = ImGui::GetStyle();
-        style.ScaleAllSizes(scale);
+        style.ScaleAllSizes(scale / g_dpi_scale);
+        g_dpi_scale = scale;
         emit_json({{"type", "ack"}, {"cmd", type}, {"scale", scale}});
 
     } else if (type == "set_safe_area") {
@@ -2400,7 +3525,15 @@ void process_command(const json& cmd) {
             emit_json({{"type", "error"}, {"cmd", type}, {"message", "widget not found: " + wid}});
             return;
         }
-        w->visible_condition = condition;
+        auto candidate_windows = g_windows;
+        auto candidate_order = g_window_order;
+        Widget* updated = find_widget_in_window(candidate_windows.at(win_id), wid);
+        if (!updated)
+            throw std::logic_error("candidate widget lookup failed");
+        updated->visible_condition = condition;
+        validate_state_limits(candidate_windows, candidate_order);
+        g_windows.swap(candidate_windows);
+        g_window_order.swap(candidate_order);
         emit_json({{"type", "ack"}, {"cmd", type}, {"window", win_id}, {"id", wid}, {"condition", condition}});
 
     } else if (type == "set_window_visibility") {
@@ -2426,10 +3559,17 @@ void process_command(const json& cmd) {
             emit_json({{"type", "error"}, {"cmd", type}, {"message", "undo stack is empty"}});
             return;
         }
-        g_redo_stack.push_back(serialize_state());
+        json current = serialize_state();
+        const size_t current_bytes = serialized_json_bytes(current);
+        g_redo_stack.push_back(std::move(current));
+        g_redo_bytes += current_bytes;
         json prev = g_undo_stack.back();
+        const size_t previous_bytes = serialized_json_bytes(g_undo_stack.back());
         g_undo_stack.pop_back();
+        g_undo_bytes = previous_bytes > g_undo_bytes
+            ? 0 : g_undo_bytes - previous_bytes;
         restore_state(prev);
+        trim_history_storage();
         emit_json({{"type", "ack"}, {"cmd", type}, {"undo_depth", (int)g_undo_stack.size()}, {"redo_depth", (int)g_redo_stack.size()}});
 
     } else if (type == "redo") {
@@ -2438,22 +3578,35 @@ void process_command(const json& cmd) {
             emit_json({{"type", "error"}, {"cmd", type}, {"message", "redo stack is empty"}});
             return;
         }
-        g_undo_stack.push_back(serialize_state());
-        if ((int)g_undo_stack.size() > g_max_undo)
-            g_undo_stack.erase(g_undo_stack.begin());
+        json current = serialize_state();
+        const size_t current_bytes = serialized_json_bytes(current);
+        g_undo_stack.push_back(std::move(current));
+        g_undo_bytes += current_bytes;
         json next = g_redo_stack.back();
+        const size_t next_bytes = serialized_json_bytes(g_redo_stack.back());
         g_redo_stack.pop_back();
+        g_redo_bytes = next_bytes > g_redo_bytes
+            ? 0 : g_redo_bytes - next_bytes;
         restore_state(next);
+        trim_history_storage();
         emit_json({{"type", "ack"}, {"cmd", type}, {"undo_depth", (int)g_undo_stack.size()}, {"redo_depth", (int)g_redo_stack.size()}});
 
     } else if (type == "save_snapshot") {
         std::string name = cmd.value("name", "snapshot_" + std::to_string(g_snapshots.size()));
+        if (name.size() > MAX_SNAPSHOT_NAME_BYTES)
+            throw std::length_error("snapshot name exceeds the 256 byte limit");
         std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_snapshots.size() >= MAX_SNAPSHOTS)
+            throw std::length_error("snapshot count exceeds the limit of 64");
         Snapshot snap;
         snap.name = name;
         snap.frame = g_frame_count;
         snap.data = serialize_state();
+        const size_t snapshot_bytes = name.size() + serialized_json_bytes(snap.data);
+        if (snapshot_bytes > MAX_SNAPSHOT_BYTES - g_snapshot_bytes)
+            throw std::length_error("snapshot storage exceeds the 64 MiB limit");
         g_snapshots.push_back(std::move(snap));
+        g_snapshot_bytes += snapshot_bytes;
         emit_json({{"type", "ack"}, {"cmd", type}, {"name", name}, {"snapshot_count", (int)g_snapshots.size()}});
 
     } else if (type == "load_snapshot") {
@@ -2495,7 +3648,15 @@ void process_command(const json& cmd) {
         std::lock_guard<std::mutex> lock(g_mutex);
         bool found = false;
         for (auto it = g_snapshots.begin(); it != g_snapshots.end(); ++it) {
-            if (it->name == name) { g_snapshots.erase(it); found = true; break; }
+            if (it->name == name) {
+                const size_t snapshot_bytes =
+                    it->name.size() + serialized_json_bytes(it->data);
+                g_snapshot_bytes = snapshot_bytes > g_snapshot_bytes
+                    ? 0 : g_snapshot_bytes - snapshot_bytes;
+                g_snapshots.erase(it);
+                found = true;
+                break;
+            }
         }
         if (!found) {
             emit_json({{"type", "error"}, {"cmd", type}, {"message", "snapshot not found: " + name}});
@@ -2506,13 +3667,14 @@ void process_command(const json& cmd) {
     } else if (type == "export_cpp") {
         std::string path = cmd.value("path", "");
         std::lock_guard<std::mutex> lock(g_mutex);
+        validate_state_limits(g_windows, g_window_order);
         std::ostringstream ss;
         ss << "void render_ui() {\n";
         for (auto& wid : g_window_order) {
             auto wit = g_windows.find(wid);
             if (wit == g_windows.end()) continue;
             auto& win = wit->second;
-            ss << "    // Window: " << win.id << "\n";
+            ss << "    // Window: " << code_comment_escape(win.id) << "\n";
             ss << "    if (ImGui::Begin(\"" << cpp_escape(win.title) << "\")) {\n";
             for (auto& wname : win.widget_order) {
                 auto wit2 = win.widgets.find(wname);
@@ -2529,27 +3691,22 @@ void process_command(const json& cmd) {
         resp["format"] = "cpp";
         resp["code"] = code;
         if (!path.empty()) {
-            std::ofstream f(path);
-            if (f.is_open()) {
-                f << code;
-                f.close();
-                resp["path"] = path;
-            } else {
-                resp["error"] = "failed to write file: " + path;
-            }
+            write_export_file(path, code);
+            resp["path"] = path;
         }
         emit_json(resp);
 
     } else if (type == "export_lua") {
         std::string path = cmd.value("path", "");
         std::lock_guard<std::mutex> lock(g_mutex);
+        validate_state_limits(g_windows, g_window_order);
         std::ostringstream ss;
         ss << "function render_ui()\n";
         for (auto& wid : g_window_order) {
             auto wit = g_windows.find(wid);
             if (wit == g_windows.end()) continue;
             auto& win = wit->second;
-            ss << "    -- Window: " << win.id << "\n";
+            ss << "    -- Window: " << code_comment_escape(win.id) << "\n";
             ss << "    imgui.Begin(\"" << lua_escape(win.title) << "\")\n";
             for (auto& wname : win.widget_order) {
                 auto wit2 = win.widgets.find(wname);
@@ -2565,20 +3722,15 @@ void process_command(const json& cmd) {
         resp["format"] = "lua";
         resp["code"] = code;
         if (!path.empty()) {
-            std::ofstream f(path);
-            if (f.is_open()) {
-                f << code;
-                f.close();
-                resp["path"] = path;
-            } else {
-                resp["error"] = "failed to write file: " + path;
-            }
+            write_export_file(path, code);
+            resp["path"] = path;
         }
         emit_json(resp);
 
     } else if (type == "export_json") {
         std::string path = cmd.value("path", "");
         std::lock_guard<std::mutex> lock(g_mutex);
+        validate_state_limits(g_windows, g_window_order);
         json layout;
         layout["version"] = "1.0";
         layout["imgui_version"] = IMGUI_VERSION;
@@ -2601,7 +3753,7 @@ void process_command(const json& cmd) {
             for (auto& wname : win.widget_order) {
                 auto wit2 = win.widgets.find(wname);
                 if (wit2 == win.widgets.end()) continue;
-                widgets.push_back(widget_export_json(wit2->second));
+                widgets.push_back(serialize_widget_full(wit2->second));
             }
             wj["widgets"] = widgets;
             wins.push_back(wj);
@@ -2612,14 +3764,8 @@ void process_command(const json& cmd) {
         resp["format"] = "json";
         resp["json"] = layout;
         if (!path.empty()) {
-            std::ofstream f(path);
-            if (f.is_open()) {
-                f << layout.dump(2);
-                f.close();
-                resp["path"] = path;
-            } else {
-                resp["error"] = "failed to write file: " + path;
-            }
+            write_export_file(path, layout.dump(2));
+            resp["path"] = path;
         }
         emit_json(resp);
 
@@ -2629,13 +3775,9 @@ void process_command(const json& cmd) {
             layout = cmd["json"];
         } else if (cmd.contains("path")) {
             std::string path = cmd["path"].get<std::string>();
-            std::ifstream f(path);
-            if (!f.is_open()) {
-                emit_json({{"type", "error"}, {"cmd", type}, {"message", "failed to open file: " + path}});
-                return;
-            }
+            const std::string contents = read_import_file(path);
             try {
-                layout = json::parse(f);
+                layout = parse_json_with_depth_limit(contents);
             } catch (const std::exception& e) {
                 emit_json({{"type", "error"}, {"cmd", type}, {"message", std::string("JSON parse error: ") + e.what()}});
                 return;
@@ -2645,149 +3787,111 @@ void process_command(const json& cmd) {
             return;
         }
 
-        std::lock_guard<std::mutex> lock(g_mutex);
-        // Clear existing state
-        g_windows.clear();
-        g_window_order.clear();
-
-        if (layout.contains("windows") && layout["windows"].is_array()) {
-            for (const auto& wj : layout["windows"]) {
-                WindowState win;
-                win.id = wj.value("id", "window");
-                win.title = wj.value("title", win.id);
-                win.x = wj.value("x", 100.0f);
-                win.y = wj.value("y", 100.0f);
-                win.w = wj.value("w", 400.0f);
-                win.h = wj.value("h", 300.0f);
-                win.open = wj.value("open", true);
-                win.collapsed = wj.value("collapsed", false);
-                win.flags = wj.value("flags", 0);
-
-                if (wj.contains("widgets") && wj["widgets"].is_array()) {
-                    for (const auto& widget_j : wj["widgets"]) {
-                        std::string wid = widget_j.value("id", "");
-                        if (wid.empty()) continue;
-                        Widget w;
-                        w.id = wid;
-                        w.label = widget_j.value("label", wid);
-                        std::string wtype = widget_j.value("type", "text");
-                        w.type = parse_widget_type(wtype);
-                        w.content = widget_j.value("content", "");
-                        w.hint = widget_j.value("hint", "");
-                        w.tooltip = widget_j.value("tooltip", "");
-                        w.overlay = widget_j.value("overlay", "");
-                        w.format = widget_j.value("format", "");
-                        w.float_val[0] = widget_j.value("value", 0.0f);
-                        w.float_min = widget_j.value("min", 0.0f);
-                        w.float_max = widget_j.value("max", 1.0f);
-                        w.int_val[0] = widget_j.value("int_value", 0);
-                        w.int_min = widget_j.value("int_min", 0);
-                        w.int_max = widget_j.value("int_max", 100);
-                        w.bool_val = widget_j.value("checked", false);
-                        if (widget_j.contains("text")) {
-                            std::string t = widget_j["text"].get<std::string>();
-                            std::strncpy(w.text_buf, t.c_str(), sizeof(w.text_buf) - 1);
-                            w.text_buf[sizeof(w.text_buf) - 1] = '\0';
-                        }
-                        w.selected = widget_j.value("selected", -1);
-                        if (widget_j.contains("items") && widget_j["items"].is_array())
-                            w.items = widget_j["items"].get<std::vector<std::string>>();
-                        if (widget_j.contains("color") && widget_j["color"].is_array()) {
-                            const auto& c = widget_j["color"];
-                            for (int i = 0; i < 4 && i < (int)c.size(); i++)
-                                w.color[i] = c[i].get<float>();
-                        }
-                        w.size_x = widget_j.value("size_x", 0.0f);
-                        w.size_y = widget_j.value("size_y", 0.0f);
-                        w.flags = widget_j.value("flags", 0);
-                        w.enabled = widget_j.value("enabled", true);
-                        w.double_val = widget_j.value("double_value", 0.0);
-                        // Import children recursively using deserialize_widget_full
-                        if (widget_j.contains("children") && widget_j["children"].is_array()) {
-                            for (const auto& child_j : widget_j["children"]) {
-                                Widget child = parse_widget_json(child_j);
-                                w.children.push_back(child);
-                            }
-                        }
-                        // Table data
-                        if (widget_j.contains("columns")) w.columns = widget_j["columns"].get<int>();
-                        if (widget_j.contains("headers") && widget_j["headers"].is_array())
-                            w.headers = widget_j["headers"].get<std::vector<std::string>>();
-                        if (widget_j.contains("rows") && widget_j["rows"].is_array())
-                            w.rows = widget_j["rows"].get<std::vector<std::vector<std::string>>>();
-
-                        win.widget_order.push_back(wid);
-                        win.widgets[wid] = w;
-                    }
-                }
-                g_window_order.push_back(win.id);
-                g_windows[win.id] = win;
-            }
+        if (!layout.is_object() || !layout.contains("windows") ||
+            !layout["windows"].is_array()) {
+            throw std::invalid_argument("layout must contain a windows array");
         }
-        emit_json({{"type", "ack"}, {"cmd", type}, {"windows", (int)g_window_order.size()}});
+        if (layout["windows"].size() > MAX_LAYOUT_WINDOWS)
+            throw std::length_error("window count exceeds the limit of 256");
+
+        std::map<std::string, WindowState> imported_windows;
+        std::vector<std::string> imported_order;
+        size_t imported_widget_count = 0;
+        for (const auto& wj : layout["windows"]) {
+            if (!wj.is_object())
+                throw std::invalid_argument("every imported window must be an object");
+            WindowState win;
+            win.id = wj.value("id", "");
+            if (win.id.empty())
+                throw std::invalid_argument("imported window id cannot be empty");
+            if (imported_windows.count(win.id) != 0)
+                throw std::invalid_argument("duplicate imported window id: " + win.id);
+            win.title = wj.value("title", win.id);
+            win.x = wj.value("x", 100.0f);
+            win.y = wj.value("y", 100.0f);
+            win.w = wj.value("w", 400.0f);
+            win.h = wj.value("h", 300.0f);
+            win.open = wj.value("open", true);
+            win.collapsed = wj.value("collapsed", false);
+            win.flags = parse_window_flags(wj);
+
+            if (wj.contains("widgets")) {
+                if (!wj["widgets"].is_array())
+                    throw std::invalid_argument("imported widgets must be an array");
+                for (const auto& widget_j : wj["widgets"]) {
+                    Widget widget = deserialize_widget_full_at_depth(
+                        widget_j, 1, imported_widget_count);
+                    if (widget.id.empty())
+                        throw std::invalid_argument("imported widget id cannot be empty");
+                    if (win.widgets.count(widget.id) != 0)
+                        throw std::invalid_argument("duplicate imported widget id: " + widget.id);
+                    win.widget_order.push_back(widget.id);
+                    win.widgets.emplace(widget.id, std::move(widget));
+                }
+            }
+            imported_order.push_back(win.id);
+            imported_windows.emplace(win.id, std::move(win));
+        }
+        validate_state_limits(imported_windows, imported_order);
+
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            push_undo_state();
+            g_windows.swap(imported_windows);
+            g_window_order.swap(imported_order);
+        }
+        emit_json({{"type", "ack"}, {"cmd", type},
+                   {"windows", static_cast<int>(g_window_order.size())}});
 
     } else if (type == "load_texture") {
         std::string id = cmd.value("id", "");
         std::string path = cmd.value("path", "");
-        LoadedTexture tex; tex.id = id; tex.path = path;
+        if (id.empty()) {
+            emit_json({{"type", "error"}, {"cmd", type},
+                       {"message", "texture id cannot be empty"}});
+            return;
+        }
+        LoadedTexture tex;
+        tex.id = id;
+        tex.path = path;
         bool loaded = false;
         std::ifstream file(path, std::ios::binary);
         if (file.is_open()) {
-            char magic[2] = {0,0}; file.read(magic, 2);
-            if (magic[0]=='B' && magic[1]=='M') {
-                file.seekg(0, std::ios::beg);
-                uint8_t hdr[54]; file.read(reinterpret_cast<char*>(hdr), 54);
-                int off=*reinterpret_cast<int*>(&hdr[10]), w=*reinterpret_cast<int*>(&hdr[18]);
-                int h=*reinterpret_cast<int*>(&hdr[22]), bpp=*reinterpret_cast<short*>(&hdr[28]);
-                if (w>0 && h>0 && (bpp==24||bpp==32)) {
-                    int ch=bpp/8, rs=((w*ch+3)/4)*4;
-                    std::vector<uint8_t> px(rs*h); file.seekg(off);
-                    file.read(reinterpret_cast<char*>(px.data()), px.size());
-                    std::vector<uint8_t> rgba(w*h*4);
-                    for(int y=0;y<h;y++)for(int x=0;x<w;x++){
-                        int si=y*rs+x*ch, di=((h-1-y)*w+x)*4;
-                        rgba[di]=px[si+2];rgba[di+1]=px[si+1];rgba[di+2]=px[si];rgba[di+3]=(ch==4)?px[si+3]:255;}
-                    glGenTextures(1,&tex.tex_id);glBindTexture(GL_TEXTURE_2D,tex.tex_id);
-                    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-                    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
-                    tex.width=w;tex.height=h;tex.valid=true;loaded=true;
-                }
-            } else if (magic[0]=='P'&&(magic[1]=='6'||magic[1]=='3')) {
-                file.seekg(0,std::ios::beg); std::string hl; std::getline(file,hl);
-                bool bin=(hl.size()>1&&hl[1]=='6');
-                auto rdi=[&]()->int{std::string t;char c;while(file.get(c)){
-                    if(c=='#'){while(file.get(c)&&c!='\n');continue;}
-                    if(isspace((unsigned char)c)){if(!t.empty())return std::stoi(t);continue;}t+=c;}
-                    return t.empty()?0:std::stoi(t);};
-                int w=rdi(),h=rdi(),mv=rdi();
-                if(w>0&&h>0&&mv>0){
-                    std::vector<uint8_t> rgb(w*h*3);
-                    if(bin)file.read(reinterpret_cast<char*>(rgb.data()),rgb.size());
-                    else for(int i=0;i<w*h*3;i++)rgb[i]=(uint8_t)(rdi()*255/mv);
-                    std::vector<uint8_t> rgba(w*h*4);
-                    for(int i=0;i<w*h;i++){rgba[i*4]=rgb[i*3];rgba[i*4+1]=rgb[i*3+1];rgba[i*4+2]=rgb[i*3+2];rgba[i*4+3]=255;}
-                    glGenTextures(1,&tex.tex_id);glBindTexture(GL_TEXTURE_2D,tex.tex_id);
-                    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-                    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
-                    tex.width=w;tex.height=h;tex.valid=true;loaded=true;
+            char magic[2] = {0, 0};
+            file.read(magic, 2);
+            if (file.gcount() == 2) {
+                if (magic[0] == 'B' && magic[1] == 'M')
+                    loaded = load_bmp_texture(file, tex);
+                else if (magic[0] == 'P' && (magic[1] == '6' || magic[1] == '3'))
+                    loaded = load_ppm_texture(file, tex);
+            }
+        }
+        if (!loaded) {
+            constexpr int placeholder_width = 64;
+            constexpr int placeholder_height = 64;
+            std::vector<uint8_t> pixels(
+                static_cast<size_t>(placeholder_width * placeholder_height * 4));
+            for (int y = 0; y < placeholder_height; ++y) {
+                for (int x = 0; x < placeholder_width; ++x) {
+                    const size_t index = static_cast<size_t>(
+                        (y * placeholder_width + x) * 4);
+                    const bool checker = ((x / 8) + (y / 8)) % 2 == 0;
+                    pixels[index] = checker ? 200u : 80u;
+                    pixels[index + 1u] = checker ? 80u : 200u;
+                    pixels[index + 2u] = checker ? 200u : 80u;
+                    pixels[index + 3u] = 255u;
                 }
             }
-            file.close();
+            if (!upload_rgba_texture(tex, placeholder_width, placeholder_height, pixels))
+                throw std::runtime_error("failed to create placeholder texture");
         }
-        if(!loaded){
-            const int PW=64,PH=64; std::vector<uint8_t> px(PW*PH*4);
-            for(int y=0;y<PH;y++)for(int x=0;x<PW;x++){int i=(y*PW+x)*4;bool ck=((x/8)+(y/8))%2==0;
-                px[i]=ck?200:80;px[i+1]=ck?80:200;px[i+2]=ck?200:80;px[i+3]=255;}
-            glGenTextures(1,&tex.tex_id);glBindTexture(GL_TEXTURE_2D,tex.tex_id);
-            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,PW,PH,0,GL_RGBA,GL_UNSIGNED_BYTE,px.data());
-            tex.width=PW;tex.height=PH;tex.valid=true;
-        }
-        g_textures[id]=tex;
-        emit_json({{"type","ack"},{"cmd",type},{"id",id},{"width",tex.width},{"height",tex.height},{"placeholder",!loaded}});
+        auto existing = g_textures.find(id);
+        if (existing != g_textures.end() && existing->second.tex_id != 0)
+            glDeleteTextures(1, &existing->second.tex_id);
+        g_textures[id] = tex;
+        emit_json({{"type", "ack"}, {"cmd", type}, {"id", id},
+                   {"width", tex.width}, {"height", tex.height},
+                   {"placeholder", !loaded}});
     } else if (type == "unload_texture") {
         std::string id = cmd.value("id", "");
         auto it = g_textures.find(id);

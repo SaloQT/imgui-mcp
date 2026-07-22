@@ -2,13 +2,26 @@
 // Part of imgui_mcp_app: Interactive Dear ImGui application controlled via MCP
 
 #include "types.h"
+#include <algorithm>
 #include <cmath>
 #include <cfloat>
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-static inline const char* fmt_or_null(const std::string& f) {
-    return f.empty() ? nullptr : f.c_str();
+static constexpr size_t MAX_WIDGET_ITEMS = 1024;
+static constexpr size_t MAX_PLOT_VALUES = 4096;
+static constexpr size_t MAX_TABLE_HEADERS = 64;
+static constexpr size_t MAX_TABLE_ROWS = 1024;
+static constexpr size_t MAX_TABLE_CELLS = 16384;
+static constexpr int MAX_TABLE_COLUMNS = 64;
+static constexpr size_t MAX_DRAW_COMMANDS = 1024;
+static constexpr int MAX_DRAW_SEGMENTS = 256;
+static constexpr int MAX_INVENTORY_DIMENSION = 64;
+static constexpr int MAX_SKILL_SLOTS = 64;
+
+static inline const char* fmt_or_null(const Widget& widget) {
+    return !widget.format.empty() && is_safe_widget_format(widget)
+        ? widget.format.c_str() : nullptr;
 }
 
 static inline const char* text_or_label(const Widget& w) {
@@ -31,8 +44,33 @@ void render_widget(const std::string& win_id, Widget& w) {
         w.request_focus = false;
     }
 
-    // Apply cursor offset if set (from move_widget command)
-    if (w.cursor_offset[0] != 0.0f || w.cursor_offset[1] != 0.0f) {
+    // Apply responsive anchor positioning, or a relative cursor offset.
+    if (w.anchor != Anchor::None) {
+        const ImVec2 region_min = ImGui::GetWindowContentRegionMin();
+        const ImVec2 region_max = ImGui::GetWindowContentRegionMax();
+        const float width = w.size_x > 0.0f ? w.size_x :
+            std::max(0.0f, w.rect_max[0] - w.rect_min[0]);
+        const float height = w.size_y > 0.0f ? w.size_y :
+            std::max(0.0f, w.rect_max[1] - w.rect_min[1]);
+        float x_factor = 0.0f, y_factor = 0.0f;
+        switch (w.anchor) {
+        case Anchor::TopCenter: case Anchor::Center: case Anchor::BottomCenter:
+            x_factor = 0.5f; break;
+        case Anchor::TopRight: case Anchor::CenterRight: case Anchor::BottomRight:
+            x_factor = 1.0f; break;
+        default: break;
+        }
+        switch (w.anchor) {
+        case Anchor::CenterLeft: case Anchor::Center: case Anchor::CenterRight:
+            y_factor = 0.5f; break;
+        case Anchor::BottomLeft: case Anchor::BottomCenter: case Anchor::BottomRight:
+            y_factor = 1.0f; break;
+        default: break;
+        }
+        ImGui::SetCursorPos(ImVec2(
+            region_min.x + (region_max.x - region_min.x) * x_factor - width * x_factor + w.anchor_offset[0],
+            region_min.y + (region_max.y - region_min.y) * y_factor - height * y_factor + w.anchor_offset[1]));
+    } else if (w.cursor_offset[0] != 0.0f || w.cursor_offset[1] != 0.0f) {
         ImVec2 cur = ImGui::GetCursorPos();
         ImGui::SetCursorPos(ImVec2(cur.x + w.cursor_offset[0], cur.y + w.cursor_offset[1]));
     }
@@ -72,6 +110,8 @@ void render_widget(const std::string& win_id, Widget& w) {
             }
         }
     }
+
+    ImGui::PushID(w.id.c_str());
 
     if (!w.enabled)
         ImGui::BeginDisabled();
@@ -124,6 +164,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::RadioButton:
         if (ImGui::RadioButton(w.label.c_str(), w.bool_val)) {
+            w.bool_val = true;
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"checked", true}});
         }
@@ -245,14 +286,14 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::InputFloat:
         if (ImGui::InputFloat(w.label.c_str(), &w.float_val[0],
                               (float)w.step, (float)w.step_fast,
-                              fmt_or_null(w.format))) {
+                              fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"value", w.float_val[0]}});
         }
         break;
 
     case WidgetType::InputFloat2:
-        if (ImGui::InputFloat2(w.label.c_str(), w.float_val, fmt_or_null(w.format))) {
+        if (ImGui::InputFloat2(w.label.c_str(), w.float_val, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.float_val[0], w.float_val[1]}}});
@@ -260,7 +301,7 @@ void render_widget(const std::string& win_id, Widget& w) {
         break;
 
     case WidgetType::InputFloat3:
-        if (ImGui::InputFloat3(w.label.c_str(), w.float_val, fmt_or_null(w.format))) {
+        if (ImGui::InputFloat3(w.label.c_str(), w.float_val, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.float_val[0], w.float_val[1], w.float_val[2]}}});
@@ -268,7 +309,7 @@ void render_widget(const std::string& win_id, Widget& w) {
         break;
 
     case WidgetType::InputFloat4:
-        if (ImGui::InputFloat4(w.label.c_str(), w.float_val, fmt_or_null(w.format))) {
+        if (ImGui::InputFloat4(w.label.c_str(), w.float_val, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.float_val[0], w.float_val[1], w.float_val[2], w.float_val[3]}}});
@@ -309,7 +350,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::InputDouble:
         if (ImGui::InputDouble(w.label.c_str(), &w.double_val,
-                               w.step, w.step_fast, fmt_or_null(w.format))) {
+                               w.step, w.step_fast, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"value", w.double_val}});
         }
@@ -318,7 +359,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     // ── Sliders ──────────────────────────────────────────────────────────
     case WidgetType::SliderFloat:
         if (ImGui::SliderFloat(w.label.c_str(), &w.float_val[0],
-                               w.float_min, w.float_max, fmt_or_null(w.format))) {
+                               w.float_min, w.float_max, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"value", w.float_val[0]}});
         }
@@ -326,7 +367,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::SliderFloat2:
         if (ImGui::SliderFloat2(w.label.c_str(), w.float_val,
-                                w.float_min, w.float_max, fmt_or_null(w.format))) {
+                                w.float_min, w.float_max, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.float_val[0], w.float_val[1]}}});
@@ -335,7 +376,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::SliderFloat3:
         if (ImGui::SliderFloat3(w.label.c_str(), w.float_val,
-                                w.float_min, w.float_max, fmt_or_null(w.format))) {
+                                w.float_min, w.float_max, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.float_val[0], w.float_val[1], w.float_val[2]}}});
@@ -344,7 +385,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::SliderFloat4:
         if (ImGui::SliderFloat4(w.label.c_str(), w.float_val,
-                                w.float_min, w.float_max, fmt_or_null(w.format))) {
+                                w.float_min, w.float_max, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.float_val[0], w.float_val[1], w.float_val[2], w.float_val[3]}}});
@@ -353,7 +394,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::SliderInt:
         if (ImGui::SliderInt(w.label.c_str(), &w.int_val[0],
-                             w.int_min, w.int_max, fmt_or_null(w.format))) {
+                             w.int_min, w.int_max, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"value", w.int_val[0]}});
         }
@@ -361,7 +402,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::SliderInt2:
         if (ImGui::SliderInt2(w.label.c_str(), w.int_val,
-                              w.int_min, w.int_max, fmt_or_null(w.format))) {
+                              w.int_min, w.int_max, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.int_val[0], w.int_val[1]}}});
@@ -370,7 +411,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::SliderInt3:
         if (ImGui::SliderInt3(w.label.c_str(), w.int_val,
-                              w.int_min, w.int_max, fmt_or_null(w.format))) {
+                              w.int_min, w.int_max, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.int_val[0], w.int_val[1], w.int_val[2]}}});
@@ -379,7 +420,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::SliderInt4:
         if (ImGui::SliderInt4(w.label.c_str(), w.int_val,
-                              w.int_min, w.int_max, fmt_or_null(w.format))) {
+                              w.int_min, w.int_max, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.int_val[0], w.int_val[1], w.int_val[2], w.int_val[3]}}});
@@ -388,7 +429,7 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::SliderAngle:
         if (ImGui::SliderAngle(w.label.c_str(), &w.float_val[0],
-                               w.float_min, w.float_max, fmt_or_null(w.format))) {
+                               w.float_min, w.float_max, fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"value", w.float_val[0]}});
         }
@@ -397,7 +438,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::VSliderFloat:
         if (ImGui::VSliderFloat(w.label.c_str(), ImVec2(w.size_x, w.size_y),
                                 &w.float_val[0], w.float_min, w.float_max,
-                                fmt_or_null(w.format))) {
+                                fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"value", w.float_val[0]}});
         }
@@ -406,7 +447,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::VSliderInt:
         if (ImGui::VSliderInt(w.label.c_str(), ImVec2(w.size_x, w.size_y),
                               &w.int_val[0], w.int_min, w.int_max,
-                              fmt_or_null(w.format))) {
+                              fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"value", w.int_val[0]}});
         }
@@ -416,7 +457,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragFloat:
         if (ImGui::DragFloat(w.label.c_str(), &w.float_val[0],
                              w.float_speed, w.float_min, w.float_max,
-                             fmt_or_null(w.format))) {
+                             fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"value", w.float_val[0]}});
         }
@@ -425,7 +466,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragFloat2:
         if (ImGui::DragFloat2(w.label.c_str(), w.float_val,
                               w.float_speed, w.float_min, w.float_max,
-                              fmt_or_null(w.format))) {
+                              fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.float_val[0], w.float_val[1]}}});
@@ -435,7 +476,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragFloat3:
         if (ImGui::DragFloat3(w.label.c_str(), w.float_val,
                               w.float_speed, w.float_min, w.float_max,
-                              fmt_or_null(w.format))) {
+                              fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.float_val[0], w.float_val[1], w.float_val[2]}}});
@@ -445,7 +486,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragFloat4:
         if (ImGui::DragFloat4(w.label.c_str(), w.float_val,
                               w.float_speed, w.float_min, w.float_max,
-                              fmt_or_null(w.format))) {
+                              fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.float_val[0], w.float_val[1], w.float_val[2], w.float_val[3]}}});
@@ -455,7 +496,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragFloatRange2:
         if (ImGui::DragFloatRange2(w.label.c_str(), &w.float_val[0], &w.float_val[1],
                                    w.float_speed, w.float_min, w.float_max,
-                                   fmt_or_null(w.format))) {
+                                   fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"min", w.float_val[0]}, {"max", w.float_val[1]}});
@@ -465,7 +506,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragInt:
         if (ImGui::DragInt(w.label.c_str(), &w.int_val[0],
                            w.float_speed, w.int_min, w.int_max,
-                           fmt_or_null(w.format))) {
+                           fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed", {{"value", w.int_val[0]}});
         }
@@ -474,7 +515,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragInt2:
         if (ImGui::DragInt2(w.label.c_str(), w.int_val,
                             w.float_speed, w.int_min, w.int_max,
-                            fmt_or_null(w.format))) {
+                            fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.int_val[0], w.int_val[1]}}});
@@ -484,7 +525,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragInt3:
         if (ImGui::DragInt3(w.label.c_str(), w.int_val,
                             w.float_speed, w.int_min, w.int_max,
-                            fmt_or_null(w.format))) {
+                            fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.int_val[0], w.int_val[1], w.int_val[2]}}});
@@ -494,7 +535,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragInt4:
         if (ImGui::DragInt4(w.label.c_str(), w.int_val,
                             w.float_speed, w.int_min, w.int_max,
-                            fmt_or_null(w.format))) {
+                            fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"value", {w.int_val[0], w.int_val[1], w.int_val[2], w.int_val[3]}}});
@@ -504,7 +545,7 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DragIntRange2:
         if (ImGui::DragIntRange2(w.label.c_str(), &w.int_val[0], &w.int_val[1],
                                  w.float_speed, w.int_min, w.int_max,
-                                 fmt_or_null(w.format))) {
+                                 fmt_or_null(w))) {
             w.changed = true;
             emit_event(win_id, w.id, "changed",
                 {{"min", w.int_val[0]}, {"max", w.int_val[1]}});
@@ -556,17 +597,19 @@ void render_widget(const std::string& win_id, Widget& w) {
     // ── Combo / ListBox ──────────────────────────────────────────────────
     case WidgetType::Combo: {
         if (!w.items.empty()) {
+            const size_t item_count = std::min(w.items.size(), MAX_WIDGET_ITEMS);
             // Build null-separated items string
             std::string items_str;
-            for (const auto& item : w.items) {
-                items_str += item;
+            for (size_t index = 0; index < item_count; ++index) {
+                items_str += w.items[index];
                 items_str += '\0';
             }
             items_str += '\0';
             if (ImGui::Combo(w.label.c_str(), &w.selected, items_str.c_str())) {
                 w.changed = true;
                 json data = {{"selected", w.selected}};
-                if (w.selected >= 0 && w.selected < (int)w.items.size())
+                if (w.selected >= 0 &&
+                    static_cast<size_t>(w.selected) < item_count)
                     data["value"] = w.items[w.selected];
                 emit_event(win_id, w.id, "changed", data);
             }
@@ -576,15 +619,17 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::ListBox: {
         if (!w.items.empty()) {
+            const size_t item_count = std::min(w.items.size(), MAX_WIDGET_ITEMS);
             std::vector<const char*> c_items;
-            c_items.reserve(w.items.size());
-            for (const auto& item : w.items)
-                c_items.push_back(item.c_str());
+            c_items.reserve(item_count);
+            for (size_t index = 0; index < item_count; ++index)
+                c_items.push_back(w.items[index].c_str());
             if (ImGui::ListBox(w.label.c_str(), &w.selected,
                                c_items.data(), (int)c_items.size())) {
                 w.changed = true;
                 json data = {{"selected", w.selected}};
-                if (w.selected >= 0 && w.selected < (int)w.items.size())
+                if (w.selected >= 0 &&
+                    static_cast<size_t>(w.selected) < item_count)
                     data["value"] = w.items[w.selected];
                 emit_event(win_id, w.id, "changed", data);
             }
@@ -633,24 +678,37 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     // ── Table ────────────────────────────────────────────────────────────
     case WidgetType::Table: {
-        int col_count = w.columns > 0 ? w.columns : (int)w.headers.size();
-        if (col_count <= 0) col_count = 1;
+        const size_t header_count = std::min(w.headers.size(), MAX_TABLE_HEADERS);
+        int col_count = w.columns > 0 ? w.columns : static_cast<int>(header_count);
+        col_count = std::clamp(col_count, 1, MAX_TABLE_COLUMNS);
         if (ImGui::BeginTable(w.id.c_str(), col_count,
                               (ImGuiTableFlags)w.flags,
                               ImVec2(w.size_x, w.size_y))) {
             // Setup columns from headers
-            for (const auto& hdr : w.headers)
-                ImGui::TableSetupColumn(hdr.c_str());
-            if (!w.headers.empty())
+            for (int column = 0;
+                 column < col_count && column < static_cast<int>(header_count);
+                 ++column)
+                ImGui::TableSetupColumn(w.headers[column].c_str());
+            if (header_count > 0)
                 ImGui::TableHeadersRow();
 
             // Render rows
-            for (const auto& row : w.rows) {
+            const size_t row_count = std::min(w.rows.size(), MAX_TABLE_ROWS);
+            size_t rendered_cells = 0;
+            for (size_t row_index = 0; row_index < row_count; ++row_index) {
+                const auto& row = w.rows[row_index];
                 ImGui::TableNextRow();
-                for (int c = 0; c < (int)row.size() && c < col_count; c++) {
+                const size_t remaining_cells = MAX_TABLE_CELLS - rendered_cells;
+                const size_t cell_count = std::min(
+                    std::min(row.size(), static_cast<size_t>(col_count)),
+                    remaining_cells);
+                for (size_t cell = 0; cell < cell_count; ++cell) {
                     ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(row[c].c_str());
+                    ImGui::TextUnformatted(row[cell].c_str());
                 }
+                rendered_cells += cell_count;
+                if (rendered_cells >= MAX_TABLE_CELLS)
+                    break;
             }
 
             // Render children (if any are provided instead of rows)
@@ -724,8 +782,10 @@ void render_widget(const std::string& win_id, Widget& w) {
     // ── Plots ────────────────────────────────────────────────────────────
     case WidgetType::PlotLines:
         if (!w.plot_values.empty()) {
+            const int value_count = static_cast<int>(
+                std::min(w.plot_values.size(), MAX_PLOT_VALUES));
             ImGui::PlotLines(w.label.c_str(), w.plot_values.data(),
-                             (int)w.plot_values.size(), 0,
+                             value_count, 0,
                              w.overlay.empty() ? NULL : w.overlay.c_str(),
                              FLT_MAX, FLT_MAX,
                              ImVec2(w.size_x, w.size_y));
@@ -734,8 +794,10 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::PlotHistogram:
         if (!w.plot_values.empty()) {
+            const int value_count = static_cast<int>(
+                std::min(w.plot_values.size(), MAX_PLOT_VALUES));
             ImGui::PlotHistogram(w.label.c_str(), w.plot_values.data(),
-                                 (int)w.plot_values.size(), 0,
+                                 value_count, 0,
                                  w.overlay.empty() ? NULL : w.overlay.c_str(),
                                  FLT_MAX, FLT_MAX,
                                  ImVec2(w.size_x, w.size_y));
@@ -787,7 +849,7 @@ void render_widget(const std::string& win_id, Widget& w) {
         break;
 
     case WidgetType::ValueFloat:
-        ImGui::Value(w.label.c_str(), w.float_val[0], fmt_or_null(w.format));
+        ImGui::Value(w.label.c_str(), w.float_val[0], fmt_or_null(w));
         break;
 
     // ── Tooltip ──────────────────────────────────────────────────────────
@@ -811,7 +873,13 @@ void render_widget(const std::string& win_id, Widget& w) {
     case WidgetType::DrawList: {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         if (dl) {
-            for (const auto& cmd : w.draw_commands) {
+            const size_t command_count =
+                std::min(w.draw_commands.size(), MAX_DRAW_COMMANDS);
+            for (size_t command_index = 0;
+                 command_index < command_count; ++command_index) {
+                const auto& cmd = w.draw_commands[command_index];
+                const int segment_count =
+                    std::clamp(cmd.num_segments, 0, MAX_DRAW_SEGMENTS);
                 ImU32 col = ImGui::ColorConvertFloat4ToU32(
                     ImVec4(cmd.color[0], cmd.color[1], cmd.color[2], cmd.color[3]));
                 ImVec2 p1(cmd.p1[0], cmd.p1[1]);
@@ -830,10 +898,10 @@ void render_widget(const std::string& win_id, Widget& w) {
                     dl->AddRectFilled(p1, p2, col);
                     break;
                 case 3: // Circle
-                    dl->AddCircle(p1, p2[0], col, cmd.num_segments, cmd.thickness);
+                    dl->AddCircle(p1, p2[0], col, segment_count, cmd.thickness);
                     break;
                 case 4: // CircleFilled
-                    dl->AddCircleFilled(p1, p2[0], col, cmd.num_segments);
+                    dl->AddCircleFilled(p1, p2[0], col, segment_count);
                     break;
                 case 5: // Triangle
                     dl->AddTriangle(p1, p2, p3, col, cmd.thickness);
@@ -842,7 +910,7 @@ void render_widget(const std::string& win_id, Widget& w) {
                     dl->AddTriangleFilled(p1, p2, p3, col);
                     break;
                 case 7: { // Polyline
-                    int n = cmd.num_segments > 0 ? cmd.num_segments : 4;
+                    int n = segment_count > 0 ? segment_count : 4;
                     if (n > 4) n = 4;
                     if (n < 2) n = 2;
                     ImVec2 pts[4] = { p1, p2, p3, p4 };
@@ -850,7 +918,7 @@ void render_widget(const std::string& win_id, Widget& w) {
                     break;
                 }
                 case 8: { // ConvexPolyFilled
-                    int n = cmd.num_segments > 0 ? cmd.num_segments : 4;
+                    int n = segment_count > 0 ? segment_count : 4;
                     if (n > 4) n = 4;
                     if (n < 3) n = 3;
                     ImVec2 pts[4] = { p1, p2, p3, p4 };
@@ -867,10 +935,12 @@ void render_widget(const std::string& win_id, Widget& w) {
                     dl->AddText(p1, col, cmd.text.c_str());
                     break;
                 case 12: // BezierCubic
-                    dl->AddBezierCubic(p1, p2, p3, p4, col, cmd.thickness, cmd.num_segments);
+                    dl->AddBezierCubic(p1, p2, p3, p4, col, cmd.thickness,
+                                       segment_count);
                     break;
                 case 13: // BezierQuadratic
-                    dl->AddBezierQuadratic(p1, p2, p3, col, cmd.thickness, cmd.num_segments);
+                    dl->AddBezierQuadratic(p1, p2, p3, col, cmd.thickness,
+                                           segment_count);
                     break;
                 default:
                     break;
@@ -944,11 +1014,16 @@ void render_widget(const std::string& win_id, Widget& w) {
     }
 
     case WidgetType::InventoryGrid: {
-        int cols = w.int_val[0] > 0 ? w.int_val[0] : 4;
-        int rows = w.int_val[1] > 0 ? w.int_val[1] : 4;
+        const int cols = std::clamp(
+            w.int_val[0] > 0 ? w.int_val[0] : 4, 1,
+            MAX_INVENTORY_DIMENSION);
+        const int rows = std::clamp(
+            w.int_val[1] > 0 ? w.int_val[1] : 4, 1,
+            MAX_INVENTORY_DIMENSION);
         float slot_sz = 48.0f;
         float pad = 4.0f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
+        const size_t item_count = std::min(w.items.size(), MAX_WIDGET_ITEMS);
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < cols; c++) {
                 int idx = r * cols + c;
@@ -959,7 +1034,7 @@ void render_widget(const std::string& win_id, Widget& w) {
                 dl->AddRectFilled(p, ImVec2(p.x + slot_sz, p.y + slot_sz), bg, 4.0f);
                 dl->AddRect(p, ImVec2(p.x + slot_sz, p.y + slot_sz), border, 4.0f, 0, 1.5f);
                 // Draw item label if present
-                if (idx < (int)w.items.size() && !w.items[idx].empty()) {
+                if (static_cast<size_t>(idx) < item_count && !w.items[idx].empty()) {
                     ImVec2 ts = ImGui::CalcTextSize(w.items[idx].c_str());
                     float tx = p.x + (slot_sz - ts.x) * 0.5f;
                     float ty = p.y + (slot_sz - ts.y) * 0.5f;
@@ -997,13 +1072,17 @@ void render_widget(const std::string& win_id, Widget& w) {
         // Choices
         if (!w.items.empty()) {
             ImGui::Spacing();
-            for (int i = 0; i < (int)w.items.size(); i++) {
+            const size_t item_count = std::min(w.items.size(), MAX_WIDGET_ITEMS);
+            for (size_t i = 0; i < item_count; ++i) {
                 char choice_label[512];
-                snprintf(choice_label, sizeof(choice_label), "%d. %s", i + 1, w.items[i].c_str());
-                if (ImGui::Selectable(choice_label, w.selected == i)) {
-                    w.selected = i;
+                snprintf(choice_label, sizeof(choice_label), "%d. %s",
+                         static_cast<int>(i) + 1, w.items[i].c_str());
+                if (ImGui::Selectable(choice_label,
+                                      w.selected == static_cast<int>(i))) {
+                    w.selected = static_cast<int>(i);
                     w.clicked = true;
-                    emit_event(win_id, w.id, "choice", {{"index", i}});
+                    emit_event(win_id, w.id, "choice",
+                               {{"index", static_cast<int>(i)}});
                 }
             }
         }
@@ -1027,7 +1106,8 @@ void render_widget(const std::string& win_id, Widget& w) {
             ImVec2(cx, cy - ts), ImVec2(cx - ts * 0.7f, cy + ts * 0.6f),
             ImVec2(cx + ts * 0.7f, cy + ts * 0.6f), IM_COL32(50, 255, 50, 255));
         // Entity dots from plot_values [x1,y1,x2,y2,...]
-        for (int i = 0; i + 1 < (int)w.plot_values.size(); i += 2) {
+        const size_t value_count = std::min(w.plot_values.size(), MAX_PLOT_VALUES);
+        for (size_t i = 0; i + 1 < value_count; i += 2) {
             float dx = p.x + w.plot_values[i] * map_w;
             float dy = p.y + w.plot_values[i + 1] * map_h;
             if (dx >= p.x && dx <= p.x + map_w && dy >= p.y && dy <= p.y + map_h)
@@ -1050,8 +1130,9 @@ void render_widget(const std::string& win_id, Widget& w) {
         if (!w.content.empty())
             ImGui::TextWrapped("%s", w.content.c_str());
         // Stat lines
-        for (const auto& s : w.items)
-            ImGui::Text("%s", s.c_str());
+        const size_t item_count = std::min(w.items.size(), MAX_WIDGET_ITEMS);
+        for (size_t index = 0; index < item_count; ++index)
+            ImGui::Text("%s", w.items[index].c_str());
         ImGui::EndChild();
         break;
     }
@@ -1077,7 +1158,8 @@ void render_widget(const std::string& win_id, Widget& w) {
             int n = 0;
             pts[n++] = center;
             for (int i = 0; i <= segments && n < 63; i++) {
-                float a = start_angle + (end_angle - start_angle) * ((float)i / segments);
+                float a = start_angle + (end_angle - start_angle) *
+                    (static_cast<float>(i) / static_cast<float>(segments));
                 pts[n++] = ImVec2(center.x + cosf(a) * radius, center.y + sinf(a) * radius);
             }
             dl->AddConvexPolyFilled(pts, n, IM_COL32(0, 0, 0, 160));
@@ -1114,22 +1196,25 @@ void render_widget(const std::string& win_id, Widget& w) {
     }
 
     case WidgetType::SkillBar: {
-        int count = w.int_val[0] > 0 ? w.int_val[0] : 4;
+        const int count = std::clamp(
+            w.int_val[0] > 0 ? w.int_val[0] : 4, 1, MAX_SKILL_SLOTS);
         float icon_sz = w.size_x > 0 ? w.size_x : 48.0f;
         float pad = 6.0f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
+        const size_t item_count = std::min(w.items.size(), MAX_WIDGET_ITEMS);
+        const size_t value_count = std::min(w.plot_values.size(), MAX_PLOT_VALUES);
         for (int i = 0; i < count; i++) {
             ImVec2 p = ImGui::GetCursorScreenPos();
             // Icon background
             dl->AddRectFilled(p, ImVec2(p.x + icon_sz, p.y + icon_sz), IM_COL32(55, 55, 65, 255), 4.0f);
             dl->AddRect(p, ImVec2(p.x + icon_sz, p.y + icon_sz), IM_COL32(130, 130, 145, 255), 4.0f, 0, 1.5f);
             // Keybind label
-            if (i < (int)w.items.size() && !w.items[i].empty()) {
+            if (static_cast<size_t>(i) < item_count && !w.items[i].empty()) {
                 ImVec2 kts = ImGui::CalcTextSize(w.items[i].c_str());
                 dl->AddText(ImVec2(p.x + 2, p.y + icon_sz - kts.y - 2), IM_COL32(200, 200, 100, 255), w.items[i].c_str());
             }
             // Cooldown overlay from plot_values
-            if (i < (int)w.plot_values.size() && w.plot_values[i] > 0.0f) {
+            if (static_cast<size_t>(i) < value_count && w.plot_values[i] > 0.0f) {
                 float cd = w.plot_values[i];
                 if (cd > 1.0f) cd = 1.0f;
                 float overlay_h = icon_sz * cd;
@@ -1158,9 +1243,11 @@ void render_widget(const std::string& win_id, Widget& w) {
         ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.4f, 1.0f), "%s", w.label.empty() ? "Quests" : w.label.c_str());
         ImGui::Separator();
         // Quest entries with progress bars
-        for (int i = 0; i < (int)w.items.size(); i++) {
+        const size_t item_count = std::min(w.items.size(), MAX_WIDGET_ITEMS);
+        const size_t value_count = std::min(w.plot_values.size(), MAX_PLOT_VALUES);
+        for (size_t i = 0; i < item_count; ++i) {
             ImGui::Text("%s", w.items[i].c_str());
-            float prog = (i < (int)w.plot_values.size()) ? w.plot_values[i] : 0.0f;
+            float prog = i < value_count ? w.plot_values[i] : 0.0f;
             if (prog < 0) prog = 0;
             if (prog > 1) prog = 1;
             char overlay[32];
@@ -1173,10 +1260,13 @@ void render_widget(const std::string& win_id, Widget& w) {
 
     case WidgetType::CharacterSheet: {
         if (ImGui::BeginTabBar((w.id + "_tabs").c_str())) {
-            for (int t = 0; t < (int)w.headers.size(); t++) {
+            const size_t header_count =
+                std::min(w.headers.size(), MAX_TABLE_HEADERS);
+            const size_t row_count = std::min(w.rows.size(), MAX_TABLE_ROWS);
+            for (size_t t = 0; t < header_count; ++t) {
                 if (ImGui::BeginTabItem(w.headers[t].c_str())) {
                     // Show key-value pairs from rows
-                    for (int r = 0; r < (int)w.rows.size(); r++) {
+                    for (size_t r = 0; r < row_count; ++r) {
                         const auto& row = w.rows[r];
                         if (row.size() >= 2) {
                             ImGui::Text("%s:", row[0].c_str());
@@ -1250,8 +1340,10 @@ void render_widget(const std::string& win_id, Widget& w) {
         ImVec2 rmax = ImGui::GetItemRectMax();
         w.rect_min[0] = rmin.x; w.rect_min[1] = rmin.y;
         w.rect_max[0] = rmax.x; w.rect_max[1] = rmax.y;
+        w.last_rendered_frame = g_frame_count;
     }
 
     if (!w.enabled)
         ImGui::EndDisabled();
+    ImGui::PopID();
 }

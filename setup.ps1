@@ -23,6 +23,31 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServerPy = Join-Path $ScriptDir "server.py"
 $BuildDir = Join-Path $ScriptDir "build"
 $Binary = Join-Path $BuildDir "Release\imgui_mcp_app.exe"
+$PackagedBinary = Join-Path $ScriptDir "bin\imgui_mcp_app.exe"
+if (Test-Path $PackagedBinary) { $Binary = $PackagedBinary }
+
+$PythonCommand = $null
+foreach ($candidate in @("python", "python3", "py")) {
+    if (Get-Command $candidate -ErrorAction SilentlyContinue) {
+        $PythonCommand = $candidate
+        break
+    }
+}
+if (-not $PythonCommand) {
+    Write-Host "[X] Python 3 was not found in PATH." -ForegroundColor Red
+    exit 1
+}
+$ServerPyJson = $ServerPy -replace '\\','/'
+$PythonArgsJson = if ($PythonCommand -eq "py") {
+    '"-3", "' + $ServerPyJson + '"'
+} else {
+    '"' + $ServerPyJson + '"'
+}
+$PythonYamlArgs = if ($PythonCommand -eq "py") {
+    "      - `"-3`"`n      - `"$ServerPyJson`""
+} else {
+    "      - `"$ServerPyJson`""
+}
 
 function Write-OK($msg)   { Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "[!] $msg" -ForegroundColor Yellow }
@@ -148,7 +173,8 @@ function Install-JsonConfig {
             Write-Warn "${Tool}: already configured ($Path)"
             return
         }
-        Write-Warn "${Tool}: config exists, overwriting with imgui entry ($Path)"
+        Write-Warn "${Tool}: config exists and was left unchanged ($Path); merge the imgui entry manually"
+        return
     }
 
     Set-Content -Path $Path -Value $Content -Encoding UTF8
@@ -161,8 +187,8 @@ $mcpJson = @"
 {
   "mcpServers": {
     "imgui": {
-      "command": "python3",
-      "args": ["$($ServerPy -replace '\\','/')"],
+      "command": "$PythonCommand",
+      "args": [$PythonArgsJson],
       "env": {}
     }
   }
@@ -175,8 +201,8 @@ $vscodeJson = @"
   "servers": {
     "imgui": {
       "type": "stdio",
-      "command": "python3",
-      "args": ["$($ServerPy -replace '\\','/')"],
+      "command": "$PythonCommand",
+      "args": [$PythonArgsJson],
       "env": {}
     }
   }
@@ -190,8 +216,8 @@ $zedJson = @"
     "imgui": {
       "source": "custom",
       "command": {
-        "path": "python3",
-        "args": ["$($ServerPy -replace '\\','/')"],
+        "path": "$PythonCommand",
+        "args": [$PythonArgsJson],
         "env": {}
       }
     }
@@ -202,8 +228,8 @@ $zedJson = @"
 # Codex TOML
 $codexToml = @"
 [mcp_servers.imgui]
-command = "python3"
-args = ["$($ServerPy -replace '\\','/')"]
+command = "$PythonCommand"
+args = [$PythonArgsJson]
 "@
 
 Write-Host ""
@@ -274,9 +300,9 @@ schema: v1
 
 mcpServers:
   - name: imgui
-    command: python3
+    command: $PythonCommand
     args:
-      - "$($ServerPy -replace '\\','/')"
+$PythonYamlArgs
     env: {}
 "@
     Set-Content -Path $continueConfig -Value $yamlContent -Encoding UTF8

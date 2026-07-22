@@ -12,7 +12,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_PY="${SCRIPT_DIR}/server.py"
 BUILD_DIR="${SCRIPT_DIR}/build"
+PACKAGED_BINARY="${SCRIPT_DIR}/bin/imgui_mcp_app"
 BINARY="${BUILD_DIR}/imgui_mcp_app"
+if [ -f "${PACKAGED_BINARY}" ]; then
+    BINARY="${PACKAGED_BINARY}"
+fi
 
 # Colors
 RED='\033[0;31m'
@@ -36,10 +40,8 @@ echo ""
 if [ ! -f "${BINARY}" ]; then
     info "Building imgui_mcp_app..."
     mkdir -p "${BUILD_DIR}"
-    cd "${BUILD_DIR}"
-    cmake .. -DCMAKE_BUILD_TYPE=Release > /dev/null 2>&1
-    make -j"$(nproc)" > /dev/null 2>&1
-    cd "${SCRIPT_DIR}"
+    cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release > /dev/null
+    cmake --build "${BUILD_DIR}" --parallel > /dev/null
     info "Build complete: ${BINARY}"
 else
     info "Binary already built: ${BINARY}"
@@ -72,10 +74,10 @@ install_json_config() {
             warn "${tool}: already configured (${path})"
             return
         fi
-        warn "${tool}: config exists, appending imgui server (${path})"
-        # For simplicity, just note it exists - user should merge manually
+        warn "${tool}: config exists and was left unchanged (${path}); merge the imgui entry manually"
+        return
     fi
-    echo "${content}" > "${path}"
+    printf '%s\n' "${content}" > "${path}"
     info "${tool}: ${path}"
     installed=$((installed + 1))
 }

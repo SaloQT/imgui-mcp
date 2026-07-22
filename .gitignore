@@ -1,5 +1,6 @@
 build/
 build-win/
+dist/
 cross/
 __pycache__/
 *.pyc

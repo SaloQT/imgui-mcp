@@ -176,6 +176,7 @@ struct Widget {
     // Actual rendered bounding box (filled during render)
     float rect_min[2] = {0, 0};
     float rect_max[2] = {0, 0};
+    int last_rendered_frame = -1;
 
     // Cursor offset for move_widget (applied via SetCursorPos before rendering)
     float cursor_offset[2] = {0, 0};
@@ -220,6 +221,9 @@ struct WindowState {
     bool   collapsed = false;
     int    flags     = 0;
     bool   has_menubar = false;
+    float  next_bg_alpha = -1.0f;
+    float  next_scroll[2] = {-1.0f, -1.0f};
+    bool   apply_geometry = true;
 
     // Window anchor for responsive positioning
     Anchor window_anchor = Anchor::None;
@@ -230,11 +234,28 @@ struct WindowState {
     int layer = 0; // window render layer for scene ordering
 };
 
+struct ScreenshotRequest {
+    bool pending = false;
+    std::string path = "imgui_screenshot.bmp";
+    bool annotated = false;
+    json request_id;
+    bool has_request_id = false;
+    std::string command;
+    json metadata = json::object();
+    std::string target_window;
+    std::string target_widget;
+};
+
+struct QueuedCommand {
+    json command;
+    size_t serialized_bytes = 0;
+};
+
 // ─── Extern globals ─────────────────────────────────────────────────────────
 
 extern std::mutex                        g_mutex;        // protects g_windows / g_window_order
 extern std::mutex                        g_cmd_mutex;     // protects g_commands queue
-extern std::queue<json>                  g_commands;
+extern std::queue<QueuedCommand>         g_commands;
 extern std::atomic<bool>                 g_running;
 extern std::map<std::string, WindowState> g_windows;
 extern std::vector<std::string>          g_window_order;
@@ -242,11 +263,7 @@ extern std::vector<json>                 g_events;
 extern std::mutex                        g_events_mutex;
 extern int                               g_frame_count;
 
-// Screenshot capture state
-extern std::string g_screenshot_path;        // path to save next screenshot
-extern bool        g_screenshot_requested;   // flag to capture next frame
-extern int         g_screenshot_quality;     // quality hint (1-100)
-extern bool        g_screenshot_annotated;   // annotate widget overlays
+extern ScreenshotRequest g_screenshot;
 extern std::vector<json>                 g_input_queue;   // queued input events to inject
 extern std::mutex                        g_input_mutex;    // protects g_input_queue
 
@@ -315,9 +332,11 @@ extern SDL_Window* g_sdl_window;
 
 // ─── Forward declarations ───────────────────────────────────────────────────
 
-void emit_json(const json& j);
+void emit_json(json response);
 void emit_event(const std::string& window_id, const std::string& widget_id, const std::string& event_type, const json& data = json{});
 void render_widget(const std::string& win_id, Widget& w);
+bool is_safe_widget_format(const Widget& widget);
+std::string imgui_window_name(const WindowState& window);
 
 // ─── Scene system ──────────────────────────────────────────────────────────
 

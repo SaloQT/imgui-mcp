@@ -3,13 +3,13 @@
 ## Repository
 - **GitHub**: https://github.com/SaloQT/imgui-mcp
 - **Local**: /coding/ompimguimcp
-- **Version**: 1.0.0 | **License**: MIT
+- **Version**: 1.0.4 | **License**: MIT
 
 ## What It Is
 Dear ImGui MCP Server — AI agents design, control & debug game UIs in real-time via Model Context Protocol. 70+ MCP tools, 102 widget types, visual feedback loop (screenshots), input simulation, animation, theming, game patterns, export to C++/Lua/JSON.
 
 ## Architecture
-- `server.py` — MCP server, 70 tools, zero Python deps, JSON-RPC 2.0 over stdio
+- `server.py` — MCP server, 71 tools, zero Python deps, JSON-RPC 2.0 over stdio
 - `src/main.cpp` — App lifecycle, SDL2+OpenGL3, stdin reader thread, emit helpers
 - `src/render.cpp` — render_widget() with 102 widget type switch cases
 - `src/commands.cpp` — process_command() with all command handlers + parse_widget_type()
@@ -25,9 +25,9 @@ Dear ImGui MCP Server — AI agents design, control & debug game UIs in real-tim
 omp (.omp/mcp.json), Claude Desktop/Code (.mcp.json), Cursor (.cursor/mcp.json), VS Code/Copilot (.vscode/mcp.json), Windsurf (.windsurf/mcp.json), Gemini CLI (.gemini/settings.json), Codex CLI (.codex/config.toml), Cline (global), Roo Code (.roo/mcp.json), Zed (.zed/settings.json), Continue (~/.continue/config.yaml), Augment (~/.augment/mcp.json)
 
 ## Build Commands
-- Linux: `mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)`
+- Linux: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel`
 - Windows cross: `cmake -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake && cmake --build build-win`
-- Release: `./release.sh [version]` → produces linux-x64.tar.gz + windows-x64.zip
+- Release: `./release.sh [version]` → validates `VERSION` and writes Linux/Windows archives to `dist/`
 
 ## CI/CD
 `.github/workflows/release.yml` — triggers on `v*` tag push. Two parallel build jobs (Linux native, Windows MinGW cross-compile), then a release job that downloads artifacts and creates GitHub Release with binaries + auto-generated notes.

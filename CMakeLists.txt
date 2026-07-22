@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
-project(imgui_mcp VERSION 1.0.0 LANGUAGES CXX)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" IMGUI_MCP_VERSION LIMIT_COUNT 1)
+project(imgui_mcp VERSION "${IMGUI_MCP_VERSION}" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,6 +67,11 @@ add_executable(imgui_mcp_app
     ${IMGUI_SOURCES}
 )
 
+if(WIN32)
+    enable_language(RC)
+    target_sources(imgui_mcp_app PRIVATE assets/windows/app.rc)
+endif()
+
 target_include_directories(imgui_mcp_app PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
@@ -77,12 +83,17 @@ target_include_directories(imgui_mcp_app PRIVATE
 # Platform-specific linking
 if(WIN32)
     # Console subsystem (app uses stdin/stdout for MCP IPC)
-    target_link_options(imgui_mcp_app PRIVATE -mconsole)
+    if(MINGW)
+        target_link_options(imgui_mcp_app PRIVATE -mconsole -Wl,--no-insert-timestamp)
+    elseif(MSVC)
+        target_link_options(imgui_mcp_app PRIVATE /Brepro)
+    endif()
     target_link_libraries(imgui_mcp_app PRIVATE
         ${SDL2_LIBRARIES}
         ${OPENGL_LIBRARIES}
         opengl32
         gdi32
+        dwmapi
     )
     target_compile_definitions(imgui_mcp_app PRIVATE _CRT_SECURE_NO_WARNINGS)
 else()
@@ -94,5 +105,25 @@ else()
     target_compile_definitions(imgui_mcp_app PRIVATE ${SDL2_CFLAGS_OTHER})
 endif()
 
+target_compile_definitions(imgui_mcp_app PRIVATE
+    IMGUI_MCP_VERSION="${PROJECT_VERSION}"
+)
+
 # ─── Install ─────────────────────────────────────────────────────────────────
 install(TARGETS imgui_mcp_app RUNTIME DESTINATION bin)
+
+include(CTest)
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME python_and_native_protocol
+            COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s tests -v
+        )
+        set_tests_properties(python_and_native_protocol PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            ENVIRONMENT "IMGUI_MCP_APP=$<TARGET_FILE:imgui_mcp_app>;IMGUI_MCP_REQUIRE_NATIVE=1"
+            TIMEOUT 60
+        )
+    endif()
+endif()

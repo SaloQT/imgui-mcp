@@ -14,7 +14,7 @@
   </p>
   <p align="center">
     <a href="#quick-start">Quick Start</a> ·
-    <a href="#all-70-mcp-tools">All Tools</a> ·
+    <a href="#all-71-mcp-tools">All Tools</a> ·
     <a href="#all-102-widget-types">All Widgets</a> ·
     <a href="#game-ui-patterns">Game Patterns</a> ·
     <a href="#supported-idecli-tools">Supported Tools</a> ·
@@ -39,7 +39,7 @@ AI coding agents can generate UI code — but they **can't see the result**. The
                                 ▼
 ┌─────────────┐    MCP     ┌──────────┐   JSON    ┌─────────────┐
 │  AI Agent   │◄──────────►│ server.py │◄────────►│  Live ImGui  │
-│  (any LLM)  │  70 tools  │ 0 deps   │  stdin/  │  SDL2+GL     │
+│  (any LLM)  │  71 tools  │ 0 deps   │  stdin/  │  SDL2+GL     │
 └─────────────┘            └──────────┘  stdout   └──────┬───────┘
        ▲                                                 │
        │              screenshot (BMP)                   │
@@ -55,7 +55,7 @@ The agent creates widgets, takes a screenshot, **sees the rendered result**, and
 
 | | |
 |---|---|
-| 🖼️ **Visual Feedback** | Screenshot capture (full, per-widget, annotated) — the agent sees its work |
+| 🖼️ **Visual Feedback** | Screenshot capture (full frame, widget-bound metadata, annotated overlays) — the agent sees its work |
 | 🎮 **Game UI Patterns** | Health bars, mana bars, inventory grids, dialogue boxes, minimaps, cooldown radials, skill bars, quest trackers, character sheets, notification toasts, tooltip cards |
 | 🖱️ **Input Simulation** | Click buttons, type text, hover widgets, scroll, press keys — test UI behavior programmatically |
 | ✨ **Animation** | 7 easing functions (linear, ease-in/out, bounce, elastic, back), property tweens, loop/ping-pong |
@@ -67,6 +67,7 @@ The agent creates widgets, takes a screenshot, **sees the rendered result**, and
 | 🖌️ **Drawing** | Lines, rects, circles, triangles, beziers, polylines, text — direct ImDrawList access |
 | 🧩 **102 Widgets** | Every Dear ImGui widget + 11 game-specific patterns |
 | 🔌 **Zero Dependencies** | Python server needs no pip packages. C++ app vendors ImGui. |
+| 🪟 **Native Polish** | Dark themed Windows title bar, branded taskbar/title-bar icon, and HiDPI-aware windowing |
 
 ---
 
@@ -105,7 +106,7 @@ python3 demo.py   # runs a full feature demonstration
 
 ---
 
-## All 70 MCP Tools
+## All 71 MCP Tools
 
 ### Windows & Widgets (7)
 
@@ -238,11 +239,12 @@ python3 demo.py   # runs a full feature demonstration
 | `imgui_show_about` | Toggle the about window (version, credits, build info) |
 | `imgui_show_style_editor` | Toggle the style editor (edit colors and sizes interactively) |
 
-### System & Input State (4)
+### System, Events & Input State (5)
 
 | Tool | Description |
 |------|-------------|
 | `imgui_app_status` | Check if the ImGui app is running, binary path, and version |
+| `imgui_drain_events` | Retrieve pending native UI events with bounded batching and dropped-event accounting |
 | `imgui_get_input_state` | Query mouse position, button states, keyboard state, hovered/active/focused items |
 | `imgui_clipboard` | Get or set the system clipboard text |
 | `imgui_window_control` | Low-level window ops: set_pos, set_size, set_collapsed, set_focus, set_bg_alpha, set_scroll |
@@ -373,7 +375,7 @@ imgui_screenshot()
 
 ```
 imgui-mcp/
-├── server.py              MCP server — 70 tools, zero Python deps
+├── server.py              MCP server — 71 tools, zero Python deps
 ├── src/
 │   ├── types.h            Shared enums (102 widget types), structs, globals
 │   ├── main.cpp           SDL2+OpenGL3 lifecycle, stdin reader, emit helpers
@@ -381,6 +383,9 @@ imgui-mcp/
 │   └── commands.cpp       process_command() — all command handlers
 ├── vendor/                Dear ImGui v1.92.8 (vendored, MIT)
 ├── cmake/                 MinGW cross-compilation toolchain
+├── assets/windows/        Branded PNG/ICO and Windows resource manifest
+├── tests/                 Python bridge + native protocol regression suite
+├── VERSION                Authoritative release version
 ├── CMakeLists.txt         Cross-platform build (Linux, macOS, Windows)
 ├── setup.sh               Linux/macOS installer for all 13 tools
 ├── setup.ps1              Windows installer for all 13 tools
@@ -406,7 +411,9 @@ imgui-mcp/
 
 ```bash
 # Linux / macOS
-mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 
 # Windows (MSVC + vcpkg)
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=[vcpkg]/scripts/buildsystems/vcpkg.cmake
@@ -418,6 +425,15 @@ cmake --build build-win
 ```
 
 Requirements: CMake 3.16+, C++17 compiler, SDL2, OpenGL
+
+---
+
+## Trust Model
+
+imgui-mcp is a local development tool. Several tools intentionally read or write
+paths available to the server process (screenshots, textures, layouts, and code
+exports), so connect only trusted MCP clients and run it with the least filesystem
+privileges your project needs.
 
 ---
 

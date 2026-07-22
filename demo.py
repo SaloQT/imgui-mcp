@@ -13,6 +13,7 @@ Usage:
 
 import json
 import math
+import queue
 import subprocess
 import sys
 import time
@@ -33,6 +34,7 @@ class MCPClient:
     def __init__(self):
         self.proc = None
         self._next_id = 0
+        self._stdout_queue = queue.Queue()
 
     def start(self):
         """Spawn server.py as a subprocess."""
@@ -42,15 +44,34 @@ class MCPClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
-        # Start a thread to drain stderr so it doesn't block
+        # Drain both child streams so neither pipe can block the demo.
         import threading
 
+        self._stdout_thread = threading.Thread(
+            target=self._drain_stdout, daemon=True
+        )
+        self._stdout_thread.start()
         self._stderr_thread = threading.Thread(
             target=self._drain_stderr, daemon=True
         )
         self._stderr_thread.start()
+
+    def _drain_stdout(self):
+        """Decode server responses on a background thread for real timeouts."""
+        try:
+            for line in self.proc.stdout:
+                if not line.strip():
+                    continue
+                try:
+                    self._stdout_queue.put(json.loads(line))
+                except json.JSONDecodeError as error:
+                    self._stdout_queue.put(error)
+        except (ValueError, OSError) as error:
+            self._stdout_queue.put(error)
 
     def _drain_stderr(self):
         """Read and display server stderr (diagnostic logs)."""
@@ -79,12 +100,15 @@ class MCPClient:
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
 
-    def _recv(self) -> dict:
+    def _recv(self, timeout: float) -> dict:
         """Read one JSON-RPC response line from the server's stdout."""
-        line = self.proc.stdout.readline()
-        if not line:
-            raise RuntimeError("Server closed stdout unexpectedly")
-        return json.loads(line.strip())
+        try:
+            response = self._stdout_queue.get(timeout=timeout)
+        except queue.Empty as error:
+            raise TimeoutError("Timed out waiting for the MCP server") from error
+        if isinstance(response, Exception):
+            raise RuntimeError(f"Failed to read MCP server output: {response}")
+        return response
 
     def request(self, method: str, params: dict = None) -> dict:
         """Send a JSON-RPC request and wait for the matching response."""
@@ -98,7 +122,7 @@ class MCPClient:
         # Read responses until we get ours (skip notifications from server)
         deadline = time.time() + TIMEOUT
         while time.time() < deadline:
-            resp = self._recv()
+            resp = self._recv(max(0.01, deadline - time.time()))
             if resp.get("id") == msg_id:
                 if "error" in resp:
                     raise RuntimeError(
@@ -119,6 +143,10 @@ class MCPClient:
         """Send a tools/call request and return the parsed result content."""
         params = {"name": name, "arguments": arguments or {}}
         result = self.request("tools/call", params)
+        if result.get("isError"):
+            content = result.get("content", [])
+            message = content[0].get("text", "tool call failed") if content else "tool call failed"
+            raise RuntimeError(f"{name}: {message}")
         # Parse the text content from the MCP response envelope
         content = result.get("content", [])
         if content and content[0].get("type") == "text":
