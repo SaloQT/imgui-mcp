@@ -42,7 +42,7 @@ AI coding agents can generate UI code — but they **can't see the result**. The
 │  (any LLM)  │  84 tools  │ 0 deps   │  stdin/  │  SDL2+GL     │
 └─────────────┘            └──────────┘  stdout   └──────┬───────┘
        ▲                                                 │
-       │              screenshot (BMP)                   │
+       │    screenshot (PNG / JPEG / BMP · region crop)   │
        └─────────────────────────────────────────────────┘
                     Agent SEES what it built
 ```
@@ -55,7 +55,7 @@ The agent creates widgets, takes a screenshot, **sees the rendered result**, and
 
 | | |
 |---|---|
-| 🖼️ **Visual Feedback** | Screenshot capture (full frame, widget-bound metadata, annotated overlays) — the agent sees its work |
+| 🖼️ **Visual Feedback** | Screenshot capture (full frame, widget-bound, annotated) in **PNG / JPEG / BMP** with optional **region cropping** — returned as native MCP `ImageContent` so any vision model sees it instantly |
 | 🎮 **Game UI Patterns** | Health bars, mana bars, inventory grids, dialogue boxes, minimaps, cooldown radials, skill bars, quest trackers, character sheets, notification toasts, tooltip cards |
 | 🖱️ **Input Simulation** | Click buttons, type text, hover widgets, scroll, press keys — test UI behavior programmatically |
 | ✨ **Animation** | 7 easing functions, nested-widget property tweens, loop/ping-pong, and JSON round-trip persistence |
@@ -66,7 +66,7 @@ The agent creates widgets, takes a screenshot, **sees the rendered result**, and
 | 📦 **Export** | Generate production C++, Lua, or complete JSON designs with fonts and live animations |
 | 🖌️ **Drawing** | Lines, rects, circles, triangles, beziers, polylines, text — direct ImDrawList access |
 | 🧩 **102 Widgets** | Every Dear ImGui widget + 11 game-specific patterns |
-| 🔌 **Zero Dependencies** | Python server needs no pip packages. C++ app vendors ImGui. |
+| 🔌 **Zero Dependencies** | Python server uses `Pillow` (optional) for PNG/JPEG conversion. C++ app vendors ImGui. |
 | 🪟 **Native Polish** | Dark themed Windows title bar, branded taskbar/title-bar icon, and HiDPI-aware windowing |
 | 🔤 **Font Stacks** | Runtime TTF/OTF loading, Unicode coverage presets, and merged icon/symbol fallback faces |
 
@@ -126,9 +126,23 @@ uv run python demo.py   # runs a full feature demonstration
 
 | Tool | Description |
 |------|-------------|
-| `imgui_screenshot` | Capture the current frame as BMP — agent can inspect the image to see what it built |
-| `imgui_screenshot_widget` | Capture with a specific widget's bounding box info for targeted inspection |
-| `imgui_screenshot_annotated` | Capture with widget ID overlays drawn on the image for spatial reference |
+| `imgui_screenshot` | Capture the current frame as **PNG** (default), JPEG, or BMP. Optional `region: {x, y, width, height}` crops to a specific area. Returns a native MCP `ImageContent` — works with Claude, GPT-4o, and Gemini. |
+| `imgui_screenshot_widget` | Capture with a specific widget's bounding box info for targeted inspection. Supports `format` and `region`. |
+| `imgui_screenshot_annotated` | Capture with widget ID overlays drawn on the image for spatial reference. Supports `format` and `region`. |
+
+#### Screenshot parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `format` | `"png"` \| `"jpeg"` \| `"bmp"` | `"png"` | Output image format. PNG is lossless and supported by all vision models. JPEG is smaller. BMP is legacy/raw. |
+| `region` | `{x, y, width, height}` | full frame | Crop the screenshot to a specific pixel region before returning. |
+
+**Examples:**
+```
+imgui_screenshot(format="png")                                                    # full frame PNG
+imgui_screenshot(format="jpeg", region={"x":0, "y":0, "width":400, "height":200})  # cropped JPEG
+imgui_screenshot_widget(widget_id="hp_bar", format="png")                          # widget-focused PNG
+```
 
 ### Input Simulation (7)
 
@@ -406,9 +420,27 @@ imgui_export_cpp(path="src/game_hud.cpp")
 
 ```
 imgui_set_resolution_preset(preset="4k")
-imgui_screenshot()
+imgui_screenshot(format="png")
 imgui_set_resolution_preset(preset="mobile")
-imgui_screenshot()
+imgui_screenshot(format="png")
+```
+
+### Cropped Screenshot (inspect one widget)
+
+> "Show me just the health bar, not the whole screen."
+
+```
+imgui_screenshot(format="png", region={"x": 10, "y": 50, "width": 380, "height": 40})
+# Returns a tight PNG crop of only the health bar area
+```
+
+### Universal Format for any AI Vision Model
+
+> "Take a screenshot I can view in Claude / GPT-4o / Gemini."
+
+```
+imgui_screenshot(format="png")
+# Returns MCP ImageContent — no temp file, no BMP, works with every vision model
 ```
 
 ---

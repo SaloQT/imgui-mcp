@@ -5,7 +5,21 @@
 #include "types.h"
 
 #include "imgui.h"
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#endif
+#define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
+#ifdef _WIN32
+#include <SDL2/SDL_syswm.h>
+#include <dwmapi.h>
+#endif
+#include <GL/gl.h>
 
 #include <algorithm>
 #include <charconv>
@@ -21,7 +35,6 @@
 #include <stdexcept>
 #include <cmath>
 #include <cstdint>
-#include <GL/gl.h>
 
 #ifndef _WIN32
 #include <fcntl.h>

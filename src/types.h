@@ -9,6 +9,13 @@
 #include <mutex>
 #include <atomic>
 #include <queue>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include <GL/gl.h>
 #include "json.hpp"
 

@@ -449,7 +449,49 @@ static bool wait_for_stdin() {
     HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
     if (handle == nullptr || handle == INVALID_HANDLE_VALUE)
         return true;
-    return WaitForSingleObject(handle, 100) == WAIT_OBJECT_0;
+
+    DWORD file_type = GetFileType(handle);
+    if (file_type == FILE_TYPE_PIPE) {
+        DWORD bytes_avail = 0;
+        if (!PeekNamedPipe(handle, nullptr, 0, nullptr, &bytes_avail, nullptr)) {
+            // Broken pipe / closed stdin -> return true so std::cin encounters EOF and exits
+            return true;
+        }
+        if (bytes_avail == 0) {
+            Sleep(50);
+            return false;
+        }
+        return true;
+    }
+
+    if (file_type == FILE_TYPE_CHAR) {
+        DWORD num_events = 0;
+        if (GetNumberOfConsoleInputEvents(handle, &num_events)) {
+            if (num_events == 0) {
+                Sleep(50);
+                return false;
+            }
+            INPUT_RECORD records[16];
+            DWORD read_records = 0;
+            if (PeekConsoleInputW(handle, records, 16, &read_records)) {
+                bool has_key = false;
+                for (DWORD i = 0; i < read_records; ++i) {
+                    if (records[i].EventType == KEY_EVENT && records[i].Event.KeyEvent.bKeyDown) {
+                        has_key = true;
+                        break;
+                    }
+                }
+                if (!has_key) {
+                    // Flush non-key events (e.g. mouse move, focus) so buffer doesn't stay signaled
+                    ReadConsoleInputW(handle, records, read_records, &read_records);
+                    Sleep(50);
+                    return false;
+                }
+            }
+        }
+    }
+
+    return WaitForSingleObject(handle, 50) == WAIT_OBJECT_0;
 #else
     pollfd descriptor{STDIN_FILENO, POLLIN, 0};
     int result;
@@ -1242,7 +1284,21 @@ int main(int argc, char** argv) {
     }
 
     // Cleanup
-    reader.join();
+#ifdef _WIN32
+    if (reader.joinable()) {
+        HANDLE thread_handle = reinterpret_cast<HANDLE>(reader.native_handle());
+        CancelSynchronousIo(thread_handle);
+        if (WaitForSingleObject(thread_handle, 300) == WAIT_OBJECT_0) {
+            reader.join();
+        } else {
+            reader.detach();
+        }
+    }
+#else
+    if (reader.joinable()) {
+        reader.join();
+    }
+#endif
     for (auto& [texture_id, texture] : g_textures) {
         (void)texture_id;
         if (texture.tex_id != 0)

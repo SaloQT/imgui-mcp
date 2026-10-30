@@ -28,6 +28,13 @@ import time
 import queue
 from pathlib import Path
 from typing import Any, Optional
+import base64
+
+try:
+    from PIL import Image
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
 
 import mcp.server.stdio
 import mcp.types as mcp_types
@@ -43,7 +50,7 @@ try:
 except OSError:
     SERVER_VERSION = "0.0.0+unknown"
 PROTOCOL_VERSION = "2025-06-18"
-DEFAULT_SCREENSHOT_PATH = str(Path(tempfile.gettempdir()) / "imgui_screenshot.bmp")
+DEFAULT_SCREENSHOT_PATH = str(Path(tempfile.gettempdir()) / "imgui_screenshot.png")
 MAX_PROTOCOL_BYTES = 4 * 1024 * 1024
 MAX_NATIVE_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_PENDING_RESPONSES = 2
@@ -1274,19 +1281,39 @@ TOOLS = [
     {
         "name": "imgui_screenshot",
         "description": (
-            "Capture a screenshot of the current ImGui frame and save it as a BMP file."
+            "Capture a screenshot of the current ImGui frame. Format can be png, jpg, or bmp. "
+            "Supports optional cropping by pixel area [x, y, w, h] or auto-cropping to a specific window/widget."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path to save the screenshot (defaults to the system temporary directory)",
+                    "description": "File path to save the screenshot (defaults to system temporary directory as .png)",
                 },
                 "format": {
                     "type": "string",
-                    "enum": ["bmp", "ppm"],
-                    "description": "Image format (currently only bmp is supported natively)",
+                    "enum": ["png", "jpg", "jpeg", "bmp", "ppm"],
+                    "description": "Image format to save: 'png', 'jpg', or 'bmp' (default: 'png')",
+                },
+                "crop_box": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "Crop area in pixels: [x, y, width, height]",
+                },
+                "window": {
+                    "type": "string",
+                    "description": "Optional window ID to auto-crop the screenshot to",
+                },
+                "widget": {
+                    "type": "string",
+                    "description": "Optional widget ID (requires window) to auto-crop the screenshot to",
+                },
+                "padding": {
+                    "type": "number",
+                    "description": "Optional padding in pixels around the cropped window/widget",
                 },
             },
         },
@@ -1296,7 +1323,7 @@ TOOLS = [
         "name": "imgui_screenshot_widget",
         "description": (
             "Capture a screenshot with information about a specific widget's bounds. "
-            "Returns the screenshot path and widget location data."
+            "Returns the screenshot path, widget location data, and can auto-crop directly to the widget."
         ),
         "inputSchema": {
             "type": "object",
@@ -1311,7 +1338,20 @@ TOOLS = [
                 },
                 "path": {
                     "type": "string",
-                    "description": "File path to save the screenshot (defaults to the system temporary directory)",
+                    "description": "File path to save the screenshot (defaults to system temporary directory as .png)",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["png", "jpg", "jpeg", "bmp", "ppm"],
+                    "description": "Image format to save: 'png', 'jpg', or 'bmp' (default: 'png')",
+                },
+                "crop": {
+                    "type": "boolean",
+                    "description": "If true, crops the screenshot to specifically show only this widget (default: true)",
+                },
+                "padding": {
+                    "type": "number",
+                    "description": "Optional padding in pixels around the cropped widget (default: 8)",
                 },
             },
             "required": ["window", "widget"],
@@ -1321,14 +1361,26 @@ TOOLS = [
     {
         "name": "imgui_screenshot_annotated",
         "description": (
-            "Capture a screenshot with widget ID overlays for debugging and inspection."
+            "Capture a screenshot with widget ID overlays for debugging and inspection. Saved as PNG by default."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path to save the annotated screenshot (defaults to the system temporary directory)",
+                    "description": "File path to save the annotated screenshot (defaults to system temporary directory as .png)",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["png", "jpg", "jpeg", "bmp", "ppm"],
+                    "description": "Image format to save: 'png', 'jpg', or 'bmp' (default: 'png')",
+                },
+                "crop_box": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "Optional crop area in pixels: [x, y, width, height]",
                 },
             },
         },
@@ -2520,12 +2572,22 @@ class MCPServer:
                 isinstance(result, dict)
                 and (result.get("type") == "error" or "error" in result)
             )
-            return mcp_types.CallToolResult(
-                content=[
-                    mcp_types.TextContent(
-                        type="text", text=json.dumps(result, indent=2)
+            content_list: list[Any] = [
+                mcp_types.TextContent(
+                    type="text", text=json.dumps(result, indent=2)
+                )
+            ]
+            if isinstance(result, dict) and "_mcp_image" in result:
+                img_info = result.pop("_mcp_image")
+                content_list.append(
+                    mcp_types.ImageContent(
+                        type="image",
+                        data=img_info["data"],
+                        mimeType=img_info["mimeType"],
                     )
-                ],
+                )
+            return mcp_types.CallToolResult(
+                content=content_list,
                 structuredContent=result,
                 isError=is_error,
             )
@@ -2539,6 +2601,159 @@ class MCPServer:
                 structuredContent=error,
                 isError=True,
             )
+
+    def _handle_screenshot_command(self, cmd_name: str, args: dict) -> dict:
+        """Handle screenshot capture, format conversion (PNG/JPG/BMP), cropping, and encoding."""
+        requested_path = args.get("path")
+        format_req = (args.get("format") or "").lower()
+
+        # Determine target format and target save path
+        if not format_req:
+            if requested_path:
+                ext = Path(requested_path).suffix.lower().lstrip(".")
+                format_req = ext if ext in ("png", "jpg", "jpeg", "bmp", "ppm") else "png"
+            else:
+                format_req = "png"
+
+        if format_req == "jpeg":
+            format_req = "jpg"
+
+        target_path = requested_path or str(Path(tempfile.gettempdir()) / f"imgui_screenshot.{format_req}")
+        
+        # Native app only knows how to write uncompressed BMP directly
+        bmp_temp = str(Path(tempfile.gettempdir()) / f"_imgui_raw_{int(time.time() * 1000)}.bmp")
+
+        cmd = {"cmd": cmd_name, "path": bmp_temp}
+        if "window" in args:
+            cmd["window"] = args["window"]
+        if "widget" in args:
+            cmd["widget"] = args["widget"]
+
+        raw_result = self.app.send_command(cmd) or {"error": "no response"}
+        if raw_result.get("type") == "error" or "error" in raw_result:
+            if os.path.exists(bmp_temp):
+                try:
+                    os.remove(bmp_temp)
+                except OSError:
+                    pass
+            return raw_result
+
+        # Process the captured BMP with PIL if available
+        if not os.path.exists(bmp_temp):
+            return {"type": "error", "message": f"Captured screenshot not found at {bmp_temp}"}
+
+        try:
+            if _HAS_PIL:
+                with Image.open(bmp_temp) as im:
+                    im = im.convert("RGB")
+                    img_w, img_h = im.size
+
+                    # Determine cropping area if specified
+                    crop_box = args.get("crop_box")
+                    padding = float(args.get("padding", 8.0))
+
+                    # Auto-crop by widget if requested in imgui_screenshot_widget
+                    if cmd_name == "screenshot_widget" and args.get("crop", True):
+                        widget_info = raw_result.get("widget_info") or {}
+                        if "x" in widget_info and "width" in widget_info:
+                            wx, wy, ww, wh = widget_info["x"], widget_info["y"], widget_info["width"], widget_info["height"]
+                            x0 = max(0, int(wx - padding))
+                            y0 = max(0, int(wy - padding))
+                            x1 = min(img_w, int(wx + ww + padding))
+                            y1 = min(img_h, int(wy + wh + padding))
+                            if x1 > x0 and y1 > y0:
+                                im = im.crop((x0, y0, x1, y1))
+                                raw_result["cropped"] = True
+                                raw_result["crop_box"] = [x0, y0, x1 - x0, y1 - y0]
+                        else:
+                            rect_min = widget_info.get("rect_min")
+                            rect_max = widget_info.get("rect_max")
+                            if rect_min and rect_max:
+                                x0 = max(0, int(rect_min[0] - padding))
+                                y0 = max(0, int(rect_min[1] - padding))
+                                x1 = min(img_w, int(rect_max[0] + padding))
+                                y1 = min(img_h, int(rect_max[1] + padding))
+                                if x1 > x0 and y1 > y0:
+                                    im = im.crop((x0, y0, x1, y1))
+                                    raw_result["cropped"] = True
+                                    raw_result["crop_box"] = [x0, y0, x1 - x0, y1 - y0]
+
+                    # Auto-crop by explicit crop_box [x, y, w, h]
+                    elif crop_box and len(crop_box) == 4:
+                        cx, cy, cw, ch = [float(v) for v in crop_box]
+                        x0 = max(0, int(cx))
+                        y0 = max(0, int(cy))
+                        x1 = min(img_w, int(cx + cw))
+                        y1 = min(img_h, int(cy + ch))
+                        if x1 > x0 and y1 > y0:
+                            im = im.crop((x0, y0, x1, y1))
+                            raw_result["cropped"] = True
+                            raw_result["crop_box"] = [x0, y0, x1 - x0, y1 - y0]
+
+                    # Auto-crop by window or widget in imgui_screenshot
+                    elif args.get("widget") and args.get("window"):
+                        rect_cmd = {"cmd": "get_widget_rect", "window": args["window"], "id": args["widget"]}
+                        r_res = self.app.send_command(rect_cmd)
+                        if r_res and "rect_min" in r_res and "rect_max" in r_res:
+                            x0 = max(0, int(r_res["rect_min"][0] - padding))
+                            y0 = max(0, int(r_res["rect_min"][1] - padding))
+                            x1 = min(img_w, int(r_res["rect_max"][0] + padding))
+                            y1 = min(img_h, int(r_res["rect_max"][1] + padding))
+                            if x1 > x0 and y1 > y0:
+                                im = im.crop((x0, y0, x1, y1))
+                                raw_result["cropped"] = True
+                                raw_result["crop_box"] = [x0, y0, x1 - x0, y1 - y0]
+                    elif args.get("window"):
+                        win_cmd = {"cmd": "get_window_rect", "id": args["window"]}
+                        w_res = self.app.send_command(win_cmd)
+                        if w_res and "x" in w_res and "w" in w_res:
+                            x0 = max(0, int(w_res["x"] - padding))
+                            y0 = max(0, int(w_res["y"] - padding))
+                            x1 = min(img_w, int(w_res["x"] + w_res["w"] + padding))
+                            y1 = min(img_h, int(w_res["y"] + w_res["h"] + padding))
+                            if x1 > x0 and y1 > y0:
+                                im = im.crop((x0, y0, x1, y1))
+                                raw_result["cropped"] = True
+                                raw_result["crop_box"] = [x0, y0, x1 - x0, y1 - y0]
+
+                    # Save to desired format
+                    pil_fmt = "PNG" if format_req == "png" else ("JPEG" if format_req in ("jpg", "jpeg") else "BMP")
+                    Path(target_path).parent.mkdir(parents=True, exist_ok=True)
+                    im.save(target_path, format=pil_fmt)
+
+                    # Encode base64 for Claude / visual MCP clients
+                    import io
+                    buf = io.BytesIO()
+                    im.save(buf, format="PNG")
+                    b64_png = base64.b64encode(buf.getvalue()).decode("ascii")
+
+                    raw_result["path"] = target_path
+                    raw_result["format"] = format_req
+                    raw_result["width"] = im.width
+                    raw_result["height"] = im.height
+                    raw_result["_mcp_image"] = {
+                        "data": b64_png,
+                        "mimeType": "image/png"
+                    }
+            else:
+                # Fallback if Pillow is not installed: move BMP
+                import shutil
+                shutil.move(bmp_temp, target_path)
+                raw_result["path"] = target_path
+                raw_result["format"] = "bmp"
+
+        except Exception as e:
+            log(f"Screenshot postprocessing error: {e}")
+            raw_result["postprocess_warning"] = str(e)
+            raw_result["path"] = bmp_temp
+        finally:
+            if os.path.exists(bmp_temp) and bmp_temp != target_path:
+                try:
+                    os.remove(bmp_temp)
+                except OSError:
+                    pass
+
+        return raw_result
 
     def _call_tool(self, name: str, args: dict) -> dict:
         """Execute a tool and return the result."""
@@ -2681,27 +2896,13 @@ class MCPServer:
             return self.app.send_command(cmd) or {"error": "no response"}
 
         elif name == "imgui_screenshot":
-            cmd = {
-                "cmd": "screenshot",
-                "path": args.get("path", DEFAULT_SCREENSHOT_PATH),
-            }
-            return self.app.send_command(cmd) or {"error": "no response"}
+            return self._handle_screenshot_command("screenshot", args)
 
         elif name == "imgui_screenshot_widget":
-            cmd = {
-                "cmd": "screenshot_widget",
-                "window": args.get("window", ""),
-                "widget": args.get("widget", ""),
-                "path": args.get("path", DEFAULT_SCREENSHOT_PATH),
-            }
-            return self.app.send_command(cmd) or {"error": "no response"}
+            return self._handle_screenshot_command("screenshot_widget", args)
 
         elif name == "imgui_screenshot_annotated":
-            cmd = {
-                "cmd": "screenshot_annotated",
-                "path": args.get("path", DEFAULT_SCREENSHOT_PATH),
-            }
-            return self.app.send_command(cmd) or {"error": "no response"}
+            return self._handle_screenshot_command("screenshot_annotated", args)
 
         elif name == "imgui_click_widget":
             cmd = {
